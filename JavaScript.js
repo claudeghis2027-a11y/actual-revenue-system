@@ -3,7 +3,7 @@
 /* ============================ Configuration ============================ */
 // PASTE your deployed Apps Script Web App URL here (Deploy -> Manage deployments -> Web app URL).
 // It ends in /exec, e.g. "https://script.google.com/macros/s/AKfycb.../exec".
-var API_BASE_URL = 'https://script.google.com/macros/s/AKfycbwpSw5gEuGJaN16iTKOWrXbEBdPmiH-SaVVUjjNeCUweiCxz_zdyjd2hkJZAh11-E33/exec';
+var API_BASE_URL = 'PASTE_YOUR_DEPLOYED_WEB_APP_EXEC_URL_HERE';
 
 /* ============================ API layer ============================ */
 // fetch()-based replacement for the old google.script.run transport, per the
@@ -292,11 +292,14 @@ function renderStudents(content, page) {
   var search = document.getElementById('stuSearch') ? document.getElementById('stuSearch').value : '';
   apiCall('listStudents', { academicYear: STATE.academicYear, search: search, page: studentsPage, pageSize: 25 })
     .then(function (data) {
+      var importBtnHtml = STATE.user.role === 'Administrator'
+        ? '<button class="btn btn-secondary" id="stuImportBtn">&#128229; استيراد الطلاب</button>' : '';
       content.innerHTML =
         panelHeader('قائمة الطلاب', '<div class="filters-row">' +
           '<div class="field"><label>بحث</label><input id="stuSearch" class="search-box" placeholder="الكود أو الاسم" value="' + escapeHtml(search) + '"></div>' +
           '<button class="btn btn-secondary" id="stuSearchBtn">بحث</button>' +
           '<button class="btn btn-secondary" id="stuExportBtn">تصدير Excel</button>' +
+          importBtnHtml +
           '</div>') +
         '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>القسم</th></tr></thead><tbody>' +
         data.items.map(function (s) {
@@ -309,6 +312,8 @@ function renderStudents(content, page) {
       document.getElementById('stuExportBtn').onclick = function () {
         exportExcel_('students', { academicYear: STATE.academicYear, search: search }, 'الطلاب', document.getElementById('stuExportBtn'));
       };
+      var importBtn = document.getElementById('stuImportBtn');
+      if (importBtn) importBtn.onclick = function () { openStudentImportModal_(content, studentsPage); };
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderStudents(content, studentsPage); }); });
 }
@@ -915,6 +920,116 @@ function exportExcel_(report, filters, label, btnEl) {
     })
     .catch(function (err) { toast(err.message, 'error'); })
     .finally(function () { if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; } });
+}
+
+/* ============================ Student Import (Excel/CSV) ============================ */
+// Uses SheetJS (loaded in index.html) to parse .xlsx/.csv entirely client-side — no
+// per-row server call. The parsed rows are sent to the server ONCE for preview, and
+// ONCE again (only if the admin confirms) to actually write — both as a single batch
+// call each, never a loop of API calls. Student Master only; never touches Payments/
+// Receipts/Revenue/FeeSchedule/PaymentRules (enforced server-side in Students.gs).
+var importParsedRows_ = null;
+
+function openStudentImportModal_(content, currentPage) {
+  var backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML =
+    '<div class="modal">' +
+    '<div class="modal-header"><h3>استيراد الطلاب</h3><button class="close-x">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<p style="font-size:13px;color:var(--text-muted);">ملف Excel (.xlsx) أو CSV بالأعمدة: Student Code, Student Name, Stage, Class Name, Department, Active. ' +
+    'الاستيراد يخص السنة الدراسية الحالية (' + escapeHtml(STATE.academicYear) + ') فقط. لن يتم حذف أي طالب، ولن تتأثر أي بيانات مدفوعات أو رسوم.</p>' +
+    '<input type="file" id="importFileInput" accept=".xlsx,.xls,.csv">' +
+    '<div id="importStatus" style="margin-top:10px;font-size:13px;"></div>' +
+    '<div id="importPreview"></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" id="importCloseBtn">إغلاق</button>' +
+    '<button class="btn btn-primary" id="importConfirmBtn" disabled>&#128190; اعتماد واستيراد</button>' +
+    '</div></div>';
+  document.body.appendChild(backdrop);
+  importParsedRows_ = null;
+
+  function close() { backdrop.remove(); importParsedRows_ = null; }
+  backdrop.querySelector('.close-x').onclick = close;
+  document.getElementById('importCloseBtn').onclick = close;
+
+  document.getElementById('importFileInput').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var status = document.getElementById('importStatus');
+    var preview = document.getElementById('importPreview');
+    var confirmBtn = document.getElementById('importConfirmBtn');
+    confirmBtn.disabled = true;
+    preview.innerHTML = '';
+    status.textContent = 'جارٍ قراءة الملف...';
+
+    var reader = new FileReader();
+    var isCsv = /\.csv$/i.test(file.name);
+    reader.onload = function (evt) {
+      var rows;
+      try {
+        var wb = isCsv ? XLSX.read(evt.target.result, { type: 'string' }) : XLSX.read(evt.target.result, { type: 'array' });
+        var sheet = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      } catch (err) {
+        status.innerHTML = '<span class="error-box">تعذر قراءة الملف — تأكد أنه Excel أو CSV صحيح.</span>';
+        return;
+      }
+      if (!rows.length) { status.innerHTML = '<span class="error-box">الملف لا يحتوي على بيانات.</span>'; return; }
+
+      status.textContent = 'جارٍ التحليل والمعاينة...';
+      apiCall('previewStudentImport', { rows: rows, academicYear: STATE.academicYear })
+        .then(function (summary) {
+          importParsedRows_ = rows;
+          status.textContent = '';
+          preview.innerHTML = importSummaryHtml_(summary);
+          confirmBtn.disabled = summary.newCount + summary.updateCount === 0;
+        })
+        .catch(function (err) { status.innerHTML = '<span class="error-box">' + escapeHtml(err.message) + '</span>'; });
+    };
+    reader.onerror = function () { status.innerHTML = '<span class="error-box">تعذر قراءة الملف.</span>'; };
+    if (isCsv) reader.readAsText(file, 'utf-8'); else reader.readAsArrayBuffer(file);
+  });
+
+  document.getElementById('importConfirmBtn').onclick = function () {
+    if (!importParsedRows_) return;
+    var btn = document.getElementById('importConfirmBtn');
+    var status = document.getElementById('importStatus');
+    btn.disabled = true;
+    status.textContent = 'جارٍ الحفظ...';
+    apiCall('applyStudentImport', { rows: importParsedRows_, academicYear: STATE.academicYear }, { retries: false })
+      .then(function (result) {
+        status.innerHTML = '';
+        document.getElementById('importPreview').innerHTML = importSummaryHtml_({
+          newCount: result.added, updateCount: result.updated, noChangeCount: result.unchanged,
+          errorCount: result.errorCount, errors: result.errors, totalRows: result.added + result.updated + result.unchanged + result.errorCount
+        }, true);
+        toast('تم الاستيراد: ' + result.added + ' جديد، ' + result.updated + ' محدَّث', 'success');
+        importParsedRows_ = null;
+        renderStudents(content, currentPage); // refresh the list underneath; modal stays open so the admin can read the summary
+      })
+      .catch(function (err) { status.innerHTML = ''; toast(err.message, 'error'); btn.disabled = false; });
+  };
+}
+
+function importSummaryHtml_(s, isFinal) {
+  var errorsHtml = '';
+  if (s.errorCount > 0) {
+    errorsHtml = '<div style="margin-top:10px;max-height:160px;overflow-y:auto;">' +
+      '<table style="width:100%;font-size:12.5px;"><thead><tr><th style="text-align:right;">صف</th><th style="text-align:right;">كود الطالب</th><th style="text-align:right;">السبب</th></tr></thead><tbody>' +
+      (s.errors || []).map(function (e) { return '<tr><td>' + e.row + '</td><td>' + escapeHtml(e.studentCode) + '</td><td>' + escapeHtml(e.reason) + '</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+  }
+  return '<div class="cards-row" style="margin-top:14px;">' +
+    statCard('إجمالي الصفوف', fmtNum(s.totalRows), '') +
+    statCard('طلاب جدد', fmtNum(s.newCount), 'accent-green') +
+    statCard('سيتم تحديثهم', fmtNum(s.updateCount), 'accent-blue') +
+    statCard('بدون تغيير', fmtNum(s.noChangeCount), '') +
+    statCard('أخطاء', fmtNum(s.errorCount), s.errorCount > 0 ? 'accent-red' : '') +
+    '</div>' +
+    (isFinal ? '<p style="color:var(--success);font-weight:600;">تم اعتماد الاستيراد.</p>' : '') +
+    errorsHtml;
 }
 
 /* ============================ Boot ============================ */
