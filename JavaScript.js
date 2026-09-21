@@ -3,7 +3,7 @@
 /* ============================ Configuration ============================ */
 // PASTE your deployed Apps Script Web App URL here (Deploy -> Manage deployments -> Web app URL).
 // It ends in /exec, e.g. "https://script.google.com/macros/s/AKfycb.../exec".
-var API_BASE_URL = 'PASTE_YOUR_DEPLOYED_WEB_APP_EXEC_URL_HERE';
+var API_BASE_URL = 'https://script.google.com/macros/s/AKfycbwpSw5gEuGJaN16iTKOWrXbEBdPmiH-SaVVUjjNeCUweiCxz_zdyjd2hkJZAh11-E33/exec';
 
 /* ============================ API layer ============================ */
 // fetch()-based replacement for the old google.script.run transport, per the
