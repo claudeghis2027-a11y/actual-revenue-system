@@ -3,7 +3,7 @@
 /* ============================ Configuration ============================ */
 // PASTE your deployed Apps Script Web App URL here (Deploy -> Manage deployments -> Web app URL).
 // It ends in /exec, e.g. "https://script.google.com/macros/s/AKfycb.../exec".
-var API_BASE_URL = 'https://script.google.com/macros/s/AKfycbwpSw5gEuGJaN16iTKOWrXbEBdPmiH-SaVVUjjNeCUweiCxz_zdyjd2hkJZAh11-E33/exec';
+var API_BASE_URL = 'PASTE_YOUR_DEPLOYED_WEB_APP_EXEC_URL_HERE';
 
 /* ============================ API layer ============================ */
 // fetch()-based replacement for the old google.script.run transport, per the
@@ -605,7 +605,7 @@ function loadSettings_(content) {
         '</tbody></table></div>' +
 
         '<h4 style="margin-top:18px;">أنواع الرسوم وقواعد السداد (Payment Rules — نسبة % من كل نوع رسوم لكل قسط، وليست مبلغًا)</h4>' +
-        '<div class="table-wrap"><table><thead><tr><th>نوع الرسوم</th><th>قسط 1 %</th><th>قسط 2 %</th><th>قسط 3 %</th><th></th></tr></thead><tbody id="rulesBody">' +
+        '<div class="table-wrap"><table><thead><tr><th>نوع الرسوم</th><th>القسط 1 %</th><th>القسط 2 %</th><th>القسط 3 %</th><th></th></tr></thead><tbody id="rulesBody">' +
         feeTypesList.map(function (ft) { return ruleRow_(ft, rulesByFeeType[ft] || null); }).join('') +
         '</tbody></table></div>' +
         '<div class="form-grid" style="margin-top:8px;">' +
