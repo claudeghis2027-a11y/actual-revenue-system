@@ -287,35 +287,98 @@ function statCard(label, value, accent) {
 
 /* ============================ Students ============================ */
 var studentsPage = 1;
-function renderStudents(content, page) {
+var studentsSearchTimer_ = null;
+
+function renderStudents(content, page, preserveFocus) {
   studentsPage = page || 1;
-  var search = document.getElementById('stuSearch') ? document.getElementById('stuSearch').value : '';
+  var searchInputEl = document.getElementById('stuSearch');
+  var search = searchInputEl ? searchInputEl.value : '';
+  var focusInfo = (preserveFocus && searchInputEl && document.activeElement === searchInputEl)
+    ? { start: searchInputEl.selectionStart, end: searchInputEl.selectionEnd } : null;
+
   apiCall('listStudents', { academicYear: STATE.academicYear, search: search, page: studentsPage, pageSize: 25 })
     .then(function (data) {
       var importBtnHtml = STATE.user.role === 'Administrator'
         ? '<button class="btn btn-secondary" id="stuImportBtn">&#128229; استيراد الطلاب</button>' : '';
       content.innerHTML =
         panelHeader('قائمة الطلاب', '<div class="filters-row">' +
-          '<div class="field"><label>بحث</label><input id="stuSearch" class="search-box" placeholder="الكود أو الاسم" value="' + escapeHtml(search) + '"></div>' +
+          '<div class="field"><label>بحث</label><input id="stuSearch" class="search-box" placeholder="الكود أو الاسم" value="' + escapeHtml(search) + '" autocomplete="off"></div>' +
           '<button class="btn btn-secondary" id="stuSearchBtn">بحث</button>' +
           '<button class="btn btn-secondary" id="stuExportBtn">تصدير Excel</button>' +
           importBtnHtml +
           '</div>') +
         '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>القسم</th></tr></thead><tbody>' +
         data.items.map(function (s) {
-          return '<tr><td>' + escapeHtml(s.StudentCode) + '</td><td>' + escapeHtml(s.StudentName) + '</td><td>' + escapeHtml(s.Stage) +
+          return '<tr><td>' + escapeHtml(s.StudentCode) + '</td><td><a href="#" class="student-name-link" data-code="' + escapeHtml(s.StudentCode) + '">' + escapeHtml(s.StudentName) + '</a></td><td>' + escapeHtml(s.Stage) +
             '</td><td>' + escapeHtml(s.ClassName) + '</td><td>' + escapeHtml(s.Department) + '</td></tr>';
         }).join('') +
         '</tbody></table></div>' + paginationBar(data, function (p) { renderStudents(content, p); }) +
         '</div>';
-      document.getElementById('stuSearchBtn').onclick = function () { renderStudents(content, 1); };
+
+      var input = document.getElementById('stuSearch');
+      document.getElementById('stuSearchBtn').onclick = function () {
+        clearTimeout(studentsSearchTimer_);
+        renderStudents(content, 1);
+      };
+      input.addEventListener('input', function () {
+        clearTimeout(studentsSearchTimer_);
+        studentsSearchTimer_ = setTimeout(function () { renderStudents(content, 1, true); }, 350);
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          clearTimeout(studentsSearchTimer_);
+          renderStudents(content, 1);
+        }
+      });
       document.getElementById('stuExportBtn').onclick = function () {
         exportExcel_('students', { academicYear: STATE.academicYear, search: search }, 'الطلاب', document.getElementById('stuExportBtn'));
       };
       var importBtn = document.getElementById('stuImportBtn');
       if (importBtn) importBtn.onclick = function () { openStudentImportModal_(content, studentsPage); };
+
+      content.querySelectorAll('.student-name-link').forEach(function (a) {
+        a.onclick = function (e) { e.preventDefault(); openStudentDetailModal_(a.getAttribute('data-code')); };
+      });
+
+      if (focusInfo) { input.focus(); input.setSelectionRange(focusInfo.start, focusInfo.end); }
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderStudents(content, studentsPage); }); });
+}
+
+/** Student name click -> full statement in a modal (reuses getStudentStatement_, same data the "كشف حساب طالب" page already shows). */
+function openStudentDetailModal_(studentCode) {
+  var backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = '<div class="modal" style="width:min(720px,94vw);"><div class="modal-header"><h3>بيانات الطالب</h3><button class="close-x">&times;</button></div><div class="modal-body" id="studentDetailBody">' + loadingBox() + '</div></div>';
+  document.body.appendChild(backdrop);
+  backdrop.querySelector('.close-x').onclick = function () { backdrop.remove(); };
+
+  apiCall('getStudentStatement', { studentCode: studentCode, academicYear: STATE.academicYear })
+    .then(function (d) {
+      var s = d.student, t = d.totals;
+      var activeBadge = (s.Active === true || String(s.Active).toUpperCase() === 'TRUE')
+        ? '<span class="badge badge-green">نشط</span>' : '<span class="badge badge-red">غير نشط</span>';
+      document.getElementById('studentDetailBody').innerHTML =
+        '<h4 style="margin-top:0;">' + escapeHtml(s.StudentName) + ' &nbsp; ' + activeBadge + '</h4>' +
+        '<p style="color:var(--text-muted);font-size:13px;">الكود: ' + escapeHtml(s.StudentCode) + ' &nbsp;|&nbsp; المرحلة: ' + escapeHtml(s.Stage) +
+        ' &nbsp;|&nbsp; الفصل: ' + escapeHtml(s.ClassName) + ' &nbsp;|&nbsp; القسم: ' + escapeHtml(s.Department) + '</p>' +
+        '<div class="cards-row">' +
+        statCard('إجمالي المستحق', fmtNum(t.due), '') +
+        statCard('إجمالي الخصم', fmtNum(t.discount), '') +
+        statCard('إجمالي المحصل', fmtNum(t.collected), 'accent-green') +
+        statCard('إجمالي المتبقي', fmtNum(t.remaining), t.remaining > 0 ? 'accent-red' : 'accent-green') +
+        '</div>' +
+        '<h4 style="margin-top:16px;">المدفوعات السابقة</h4>' +
+        '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>المبلغ المحصل</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
+        (d.transactions.length ? d.transactions.map(function (tx) {
+          return '<tr><td>' + escapeHtml(String(tx.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(tx.FeeType) + '</td><td>' + escapeHtml(tx.Installment) +
+            '</td><td class="num">' + fmtNum(tx.AmountPaid) + '</td><td>' + escapeHtml(tx.PaymentMethod) +
+            '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + tx.ReceiptNumber + '\')">' + escapeHtml(tx.ReceiptNumber) + '</button></td><td>' + escapeHtml(tx.CreatedBy) + '</td></tr>';
+        }).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">لا توجد مدفوعات بعد</td></tr>') +
+        '</tbody></table></div>';
+    })
+    .catch(function (err) { document.getElementById('studentDetailBody').innerHTML = errorBox(err.message, function () { openStudentDetailModal_(studentCode); }); });
 }
 
 function panelHeader(title, rightHtml) {
@@ -339,21 +402,28 @@ function paginationBar(data, onPage) {
 }
 
 /* ============================ Collect payment (multi-line, one receipt) ============================ */
-var collectCtx = { feeTypes: [], methods: [], installments: [], lineSeq: 0 };
+var collectCtx = { feeTypes: [], methods: [], installments: [], lineSeq: 0, selectedStudent: null, selectedStudentSummary: null, searchTimer: null };
 
 function renderCollect(content) {
   Promise.all([apiCall('getFeeTypes', {}), apiCall('getPaymentMethods', {}), apiCall('getInstallments', { academicYear: STATE.academicYear })])
     .then(function (r) {
       collectCtx.feeTypes = r[0]; collectCtx.methods = r[1]; collectCtx.installments = r[2]; collectCtx.lineSeq = 0;
+      collectCtx.selectedStudent = null; collectCtx.selectedStudentSummary = null;
+
       content.innerHTML = '' +
-        '<div class="panel"><div class="panel-header"><h3>تحصيل دفعة</h3></div><div class="panel-body">' +
+        '<div class="panel"><div class="panel-header"><h3 id="collectTitle">تحصيل دفعة</h3></div><div class="panel-body">' +
+        '<div class="field full" style="position:relative;max-width:420px;">' +
+        '<label>اختر الطالب (بالكود أو الاسم)</label>' +
+        '<input id="pStudentSearch" placeholder="ابحث بالكود أو اسم الطالب" autocomplete="off">' +
+        '<div id="pStudentResults" style="display:none;position:absolute;z-index:20;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);max-height:220px;overflow-y:auto;width:100%;"></div>' +
+        '</div>' +
+        '<div id="collectStudentCard"></div>' +
+        '<div id="collectFormBody" style="display:none;">' +
         '<div class="form-grid">' +
-        field('كود الطالب', '<input id="pStudentCode" placeholder="STU1001">') +
         field('تاريخ السداد', '<input type="date" id="pDate" value="' + todayStr_() + '">') +
         field('طريقة الدفع', selectHtml('pMethod', collectCtx.methods)) +
         field('رقم إيصال (اختياري — يُنشأ تلقائيًا إن ترك فارغًا)', '<input id="pReceipt">') +
         '</div>' +
-        '<div class="field full" id="studentPreview" style="margin-top:6px;"></div>' +
         '<h4 style="margin:16px 0 8px;">بنود التحصيل</h4>' +
         '<div id="collectLines"></div>' +
         '<button class="btn btn-secondary btn-sm" id="addLineBtn" style="margin-top:8px;">+ إضافة بند</button>' +
@@ -362,13 +432,100 @@ function renderCollect(content) {
         '<button class="btn btn-primary" id="pSaveBtn">تسجيل التحصيل</button>' +
         '<b id="pTotal" style="font-size:14px;">الإجمالي: 0</b>' +
         '<span id="pStatus" style="align-self:center;font-size:13px;color:var(--text-muted);"></span>' +
-        '</div></div></div>';
+        '</div>' +
+        '</div>' + // #collectFormBody
+        '</div></div>';
 
-      addCollectLine_();
       document.getElementById('addLineBtn').onclick = function () { addCollectLine_(); };
-      document.getElementById('pSaveBtn').onclick = function () { submitPayment_(); };
+      document.getElementById('pSaveBtn').onclick = function () { submitPayment_(content); };
+      bindCollectStudentSearch_(content);
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderCollect(content); }); });
+}
+
+/** Debounced student search combobox — ONE listStudents call per pause in typing, never per keystroke. */
+function bindCollectStudentSearch_(content) {
+  var input = document.getElementById('pStudentSearch');
+  var results = document.getElementById('pStudentResults');
+
+  input.addEventListener('input', function () {
+    clearTimeout(collectCtx.searchTimer);
+    var q = input.value.trim();
+    if (!q) { results.style.display = 'none'; results.innerHTML = ''; return; }
+    collectCtx.searchTimer = setTimeout(function () {
+      apiCall('listStudents', { academicYear: STATE.academicYear, search: q, page: 1, pageSize: 8 })
+        .then(function (data) {
+          if (!data.items.length) {
+            results.innerHTML = '<div style="padding:8px 12px;color:var(--text-muted);font-size:13px;">لا نتائج</div>';
+            results.style.display = '';
+            return;
+          }
+          results.innerHTML = data.items.map(function (s) {
+            return '<div class="combo-item" data-code="' + escapeHtml(s.StudentCode) + '" data-name="' + escapeHtml(s.StudentName) +
+              '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);">' + escapeHtml(s.StudentCode) + ' — ' + escapeHtml(s.StudentName) + '</div>';
+          }).join('');
+          results.style.display = '';
+          results.querySelectorAll('.combo-item').forEach(function (item) {
+            item.onclick = function () { selectCollectStudent_(content, item.getAttribute('data-code'), item.getAttribute('data-name')); };
+          });
+        })
+        .catch(function () { results.style.display = 'none'; });
+    }, 350);
+  });
+
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+  document.addEventListener('click', function hideOnOutsideClick(e) {
+    if (!results.contains(e.target) && e.target !== input) results.style.display = 'none';
+  });
+}
+
+function selectCollectStudent_(content, code, name) {
+  collectCtx.selectedStudent = { code: code, name: name };
+  document.getElementById('pStudentSearch').value = code + ' — ' + name;
+  document.getElementById('pStudentResults').style.display = 'none';
+  document.getElementById('pStudentResults').innerHTML = '';
+  loadCollectStudentSummary_(content);
+}
+
+function resetCollectStudent_(content) {
+  collectCtx.selectedStudent = null; collectCtx.selectedStudentSummary = null;
+  document.getElementById('collectTitle').textContent = 'تحصيل دفعة';
+  document.getElementById('collectStudentCard').innerHTML = '';
+  document.getElementById('collectFormBody').style.display = 'none';
+  var input = document.getElementById('pStudentSearch');
+  input.value = '';
+  input.focus();
+}
+
+/** Loaded ONCE per student selection (and once more after a successful save, to refresh totals) — never per keystroke. */
+function loadCollectStudentSummary_(content) {
+  var card = document.getElementById('collectStudentCard');
+  card.innerHTML = loadingBox();
+  apiCall('getStudentStatement', { studentCode: collectCtx.selectedStudent.code, academicYear: STATE.academicYear })
+    .then(function (d) {
+      collectCtx.selectedStudentSummary = d;
+      var s = d.student, t = d.totals;
+      card.innerHTML =
+        '<div class="panel" style="margin:10px 0 16px;"><div class="panel-body">' +
+        '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;align-items:start;">' +
+        '<div><b style="font-size:15px;">' + escapeHtml(s.StudentName) + '</b><br>' +
+        '<span style="color:var(--text-muted);font-size:12.5px;">الكود: ' + escapeHtml(s.StudentCode) +
+        ' &nbsp;|&nbsp; المرحلة: ' + escapeHtml(s.Stage) + ' &nbsp;|&nbsp; الفصل: ' + escapeHtml(s.ClassName) +
+        ' &nbsp;|&nbsp; القسم: ' + escapeHtml(s.Department) + '</span></div>' +
+        '<button class="btn btn-secondary btn-sm" id="changeStudentBtn">تغيير الطالب</button>' +
+        '</div>' +
+        '<div class="cards-row" style="margin-top:10px;">' +
+        statCard('إجمالي المستحق', fmtNum(t.due), '') +
+        statCard('إجمالي الخصم', fmtNum(t.discount), '') +
+        statCard('إجمالي المحصل', fmtNum(t.collected), 'accent-green') +
+        statCard('المتبقي', fmtNum(t.remaining), t.remaining > 0 ? 'accent-red' : 'accent-green') +
+        '</div></div></div>';
+      document.getElementById('changeStudentBtn').onclick = function () { resetCollectStudent_(content); };
+      document.getElementById('collectTitle').textContent = 'تحصيل دفعة — ' + s.StudentName + ' (' + s.StudentCode + ')';
+      document.getElementById('collectFormBody').style.display = '';
+      if (!document.getElementById('collectLines').children.length) addCollectLine_();
+    })
+    .catch(function (err) { card.innerHTML = errorBox(err.message, function () { loadCollectStudentSummary_(content); }); });
 }
 
 function addCollectLine_() {
@@ -404,7 +561,8 @@ function selectHtml(id, options) {
 function todayStr_() { return new Date().toISOString().substring(0, 10); }
 
 var lastIdempotencyKey = null;
-function submitPayment_() {
+function submitPayment_(content) {
+  if (!collectCtx.selectedStudent) { toast('اختر الطالب أولًا', 'error'); return; }
   var btn = document.getElementById('pSaveBtn');
   var status = document.getElementById('pStatus');
 
@@ -425,7 +583,7 @@ function submitPayment_() {
   if (lineError) { toast(lineError, 'error'); return; }
 
   var payload = {
-    studentCode: document.getElementById('pStudentCode').value.trim(),
+    studentCode: collectCtx.selectedStudent.code,
     academicYear: STATE.academicYear,
     paymentDate: document.getElementById('pDate').value,
     paymentMethod: document.getElementById('pMethod').value,
@@ -443,14 +601,15 @@ function submitPayment_() {
       toast('تم تسجيل التحصيل بنجاح', 'success');
       status.innerHTML = 'تم تحصيل ' + fmtNum(data.totalPaid) + ' ج.م &nbsp; ' +
         '<button class="btn btn-success btn-sm" onclick="openReceipt_(\'' + data.receiptNumber + '\')">&#128220; عرض / طباعة الإيصال</button>';
-      // Do NOT reload the whole app — just reset the form for the next collection.
-      document.getElementById('pStudentCode').value = '';
+      // Do NOT reload the whole app, and do NOT lose the selected student — just reset the
+      // line items/notes/receipt-number fields and refresh the student's totals (one call).
       document.getElementById('pReceipt').value = '';
       document.getElementById('pNotes').value = '';
       document.getElementById('collectLines').innerHTML = '';
       collectCtx.lineSeq = 0;
       addCollectLine_();
       recalcTotal_();
+      loadCollectStudentSummary_(content);
     })
     .catch(function (err) { status.textContent = ''; toast(err.message, 'error'); })
     .finally(function () { btn.disabled = false; });
