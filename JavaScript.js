@@ -726,6 +726,27 @@ function renderStatement(content) {
 }
 
 /* ============================ Settings (admin) ============================ */
+/**
+ * Fixed business grouping for Education Fee Schedule entry — never stored
+ * anywhere server-side, purely a client-side convenience so an admin can
+ * enter one amount per Department+Group instead of per individual Stage.
+ * Saving fans this out to real Stage rows via upsertFeeScheduleGroup.
+ */
+var EDUCATION_GROUPS = {
+  AM: [
+    { key: 'KG', label: 'كي جي (KG1–KG2)', stages: ['KG1', 'KG2'] },
+    { key: 'Primary', label: 'ابتدائي (G1–G6)', stages: ['G1', 'G2', 'G3', 'G4', 'G5', 'G6'] },
+    { key: 'Middle', label: 'إعدادي (G7–G9)', stages: ['G7', 'G8', 'G9'] },
+    { key: 'Secondary', label: 'ثانوي (G10–G12)', stages: ['G10', 'G11', 'G12'] }
+  ],
+  BR: [
+    { key: 'KG', label: 'كي جي (KG1–KG2)', stages: ['KG1', 'KG2'] },
+    { key: 'Primary', label: 'ابتدائي (Y1–Y6)', stages: ['Y1', 'Y2', 'Y3', 'Y4', 'Y5', 'Y6'] },
+    { key: 'Middle', label: 'إعدادي (Y7–Y9)', stages: ['Y7', 'Y8', 'Y9'] },
+    { key: 'Secondary', label: 'ثانوي (Y10–Y12)', stages: ['Y10', 'Y11', 'Y12'] }
+  ]
+};
+
 function renderSettings(content) {
   content.innerHTML =
     '<div class="panel"><div class="panel-header"><h3>السنوات الدراسية وبنود الرسوم وقواعد السداد</h3></div><div class="panel-body" id="setBody">' + loadingBox() + '</div></div>';
@@ -777,18 +798,37 @@ function loadSettings_(content) {
         '<div class="field"><label>&nbsp;</label><button class="btn btn-secondary btn-sm" id="addFeeTypeBtn">إضافة نوع رسوم</button></div>' +
         '</div>' +
 
-        '<h4 style="margin-top:18px;">بنود الرسوم (Amount الإجمالي) — ' + STATE.academicYear + '</h4>' +
+        '<h4 style="margin-top:18px;">لائحة الرسوم — ' + STATE.academicYear + '</h4>' +
         (schedule.length ? '' : '<p style="color:var(--text-muted);font-size:13px;">لا توجد بنود رسوم بعد — أضفها أدناه (لن يخترع النظام أي مبلغ).</p>') +
+
+        '<div style="font-weight:600;margin-top:10px;">تعليم — حسب القسم والمجموعة</div>' +
+        '<div class="form-grid" style="margin-top:6px;">' +
+        field('القسم', selectHtml('eduDept', ['أمريكي', 'بريطاني'])) +
+        field('المجموعة', '<select id="eduGroup"></select>') +
+        field('المبلغ السنوي', '<input type="number" id="eduAmount" min="0" step="0.01">') +
+        '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="saveEduGroupBtn">حفظ</button></div>' +
+        '</div>' +
+
+        '<div style="font-weight:600;margin-top:18px;">نشاط وباص — مبلغ واحد لكل السنة الدراسية</div>' +
+        '<div class="form-grid" style="margin-top:6px;">' +
+        field('نوع الرسوم', selectHtml('actBusType', ['نشاط', 'باص'])) +
+        field('المبلغ السنوي', '<input type="number" id="actBusAmount" min="0" step="0.01">') +
+        '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="saveActBusBtn">حفظ</button></div>' +
+        '</div>' +
+
+        '<h4 style="margin-top:18px;">البنود الحالية</h4>' +
         '<div class="table-wrap"><table><thead><tr><th>المرحلة</th><th>القسم</th><th>نوع الرسوم</th><th>المبلغ الإجمالي</th><th></th></tr></thead><tbody id="scheduleBody">' +
         schedule.map(function (f) { return feeScheduleRow_(f); }).join('') +
         '</tbody></table></div>' +
+
+        '<details style="margin-top:14px;"><summary style="cursor:pointer;font-weight:600;">متقدم / إدخال يدوي (لحالات خاصة مثل قيم Stage غير القياسية مثل "G 9")</summary>' +
         '<div class="form-grid" style="margin-top:8px;">' +
-        field('المرحلة', '<input id="fsStage" placeholder="مثال: G1">') +
+        field('المرحلة', '<input id="fsStage" placeholder="مثال: G1 أو G 9">') +
         field('القسم (اتركه فارغًا = كل الأقسام)', '<input id="fsDept" placeholder="AM / BR">') +
         field('نوع الرسوم', selectHtml('fsFeeType', feeTypesList)) +
         field('المبلغ الإجمالي', '<input type="number" id="fsAmount" min="0" step="0.01">') +
         '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="addScheduleBtn">حفظ البند</button></div>' +
-        '</div>' +
+        '</div></details>' +
 
         stageIssuesHtml;
 
@@ -826,7 +866,37 @@ function loadSettings_(content) {
           .catch(function (err) { toast(err.message, 'error'); });
       };
 
-      // Fee schedule
+      // Fee schedule — Education Group (batch save)
+      function populateEduGroups() {
+        var dept = document.getElementById('eduDept').value === 'أمريكي' ? 'AM' : 'BR';
+        var groupSelect = document.getElementById('eduGroup');
+        groupSelect.innerHTML = EDUCATION_GROUPS[dept].map(function (g) { return '<option value="' + g.key + '">' + g.label + '</option>'; }).join('');
+      }
+      populateEduGroups();
+      document.getElementById('eduDept').onchange = populateEduGroups;
+      document.getElementById('saveEduGroupBtn').onclick = function () {
+        var deptLabel = document.getElementById('eduDept').value;
+        var dept = deptLabel === 'أمريكي' ? 'AM' : 'BR';
+        var groupKey = document.getElementById('eduGroup').value;
+        var groupDef = EDUCATION_GROUPS[dept].filter(function (g) { return g.key === groupKey; })[0];
+        var amount = document.getElementById('eduAmount').value;
+        if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        apiCall('upsertFeeScheduleGroup', { academicYear: STATE.academicYear, department: dept, feeType: 'تعليم', stages: groupDef.stages, amount: amount })
+          .then(function () { toast('تم حفظ رسوم ' + groupDef.label, 'success'); loadSettings_(content); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      };
+
+      // Fee schedule — Activity/Bus (single universal row)
+      document.getElementById('saveActBusBtn').onclick = function () {
+        var feeType = document.getElementById('actBusType').value;
+        var amount = document.getElementById('actBusAmount').value;
+        if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        apiCall('upsertFeeSchedule', { academicYear: STATE.academicYear, stage: '', department: '', feeType: feeType, amount: amount })
+          .then(function () { toast('تم حفظ رسوم ' + feeType, 'success'); loadSettings_(content); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      };
+
+      // Fee schedule — Advanced/Manual (raw entry, unchanged from before)
       document.getElementById('addScheduleBtn').onclick = function () {
         var payload = {
           academicYear: STATE.academicYear, stage: document.getElementById('fsStage').value.trim(),
@@ -880,7 +950,7 @@ function bindRuleSaveButtons_() {
 }
 
 function feeScheduleRow_(f) {
-  return '<tr><td>' + escapeHtml(f.Stage) + '</td><td>' + escapeHtml(f.Department || 'الكل') + '</td><td>' + escapeHtml(f.FeeType) +
+  return '<tr><td>' + escapeHtml(f.Stage || 'الكل') + '</td><td>' + escapeHtml(f.Department || 'الكل') + '</td><td>' + escapeHtml(f.FeeType) +
     '</td><td class="num">' + fmtNum(f.Amount) + '</td><td><button class="btn btn-secondary btn-sm fs-edit" ' +
     'data-stage="' + escapeHtml(f.Stage) + '" data-dept="' + escapeHtml(f.Department || '') + '" data-feetype="' + escapeHtml(f.FeeType) + '" data-amount="' + escapeHtml(f.Amount) + '">تعديل</button></td></tr>';
 }
