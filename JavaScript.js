@@ -370,12 +370,12 @@ function openStudentDetailModal_(studentCode) {
         statCard('إجمالي المتبقي', fmtNum(t.remaining), t.remaining > 0 ? 'accent-red' : 'accent-green') +
         '</div>' +
         '<h4 style="margin-top:16px;">المدفوعات السابقة</h4>' +
-        '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>المبلغ المحصل</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
+        '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>المبلغ المحصل</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
         (d.transactions.length ? d.transactions.map(function (tx) {
           return '<tr><td>' + escapeHtml(String(tx.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(tx.FeeType) + '</td><td>' + escapeHtml(tx.Installment) +
-            '</td><td class="num">' + fmtNum(tx.AmountPaid) + '</td><td>' + escapeHtml(tx.PaymentMethod) +
+            '</td><td>' + escapeHtml(tx.PaymentType || '') + '</td><td class="num">' + fmtNum(tx.AmountPaid) + '</td><td>' + escapeHtml(tx.PaymentMethod) +
             '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + tx.ReceiptNumber + '\')">' + escapeHtml(tx.ReceiptNumber) + '</button></td><td>' + escapeHtml(tx.CreatedBy) + '</td></tr>';
-        }).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">لا توجد مدفوعات بعد</td></tr>') +
+        }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">لا توجد مدفوعات بعد</td></tr>') +
         '</tbody></table></div>';
     })
     .catch(function (err) { document.getElementById('studentDetailBody').innerHTML = errorBox(err.message, function () { openStudentDetailModal_(studentCode); }); });
@@ -528,6 +528,9 @@ function loadCollectStudentSummary_(content) {
     .catch(function (err) { card.innerHTML = errorBox(err.message, function () { loadCollectStudentSummary_(content); }); });
 }
 
+/** Fixed, never-changing list — no API call needed to populate this dropdown. */
+var PAYMENT_TYPES = ['القسط الأول', 'القسط الثاني', 'القسط الثالث', 'Deposit', 'Full Amount'];
+
 function addCollectLine_() {
   var id = 'line' + (collectCtx.lineSeq++);
   var wrap = document.getElementById('collectLines');
@@ -540,6 +543,7 @@ function addCollectLine_() {
   row.innerHTML =
     field('نوع الرسوم', selectHtml(id + '_fee', collectCtx.feeTypes)) +
     field('القسط', selectHtml(id + '_inst', collectCtx.installments.map(function (i) { return i.InstallmentNo + ' - ' + i.Label; }))) +
+    field('نوع الدفعة', selectHtml(id + '_ptype', PAYMENT_TYPES)) +
     field('الخصم المسموح به', '<input type="number" id="' + id + '_disc" value="0" min="0" step="0.01">') +
     field('سبب الخصم', '<input id="' + id + '_reason" placeholder="اختياري">') +
     field('المبلغ المحصل', '<input type="number" id="' + id + '_amt" min="0" step="0.01">') +
@@ -573,11 +577,12 @@ function submitPayment_(content) {
     var id = row.id;
     var fee = document.getElementById(id + '_fee').value;
     var inst = (document.getElementById(id + '_inst').value || '').split(' - ')[0];
+    var ptype = document.getElementById(id + '_ptype').value;
     var amt = Number(document.getElementById(id + '_amt').value || 0);
     var disc = Number(document.getElementById(id + '_disc').value || 0);
     var reason = document.getElementById(id + '_reason').value;
-    if (!fee || !inst || amt <= 0) { lineError = 'أكمل بيانات كل بند (نوع الرسوم، القسط، المبلغ)'; return; }
-    lines.push({ feeType: fee, installment: inst, amountPaid: amt, discountAmount: disc, discountReason: reason });
+    if (!fee || !inst || !ptype || amt <= 0) { lineError = 'أكمل بيانات كل بند (نوع الرسوم، القسط، نوع الدفعة، المبلغ)'; return; }
+    lines.push({ feeType: fee, installment: inst, paymentType: ptype, amountPaid: amt, discountAmount: disc, discountReason: reason });
   });
   if (!lines.length) lineError = 'أضف بندًا واحدًا على الأقل';
   if (lineError) { toast(lineError, 'error'); return; }
@@ -623,12 +628,12 @@ function renderPayments(content, page) {
     .then(function (data) {
       content.innerHTML =
         panelHeader('سجل المدفوعات', '<button class="btn btn-secondary" id="payExportBtn">تصدير Excel</button>') +
-        '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>الطالب</th><th>نوع الرسوم</th><th>القسط</th><th>التاريخ</th>' +
+        '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>الطالب</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>التاريخ</th>' +
         '<th>صافي المستحق</th><th>المحصل</th><th>طريقة الدفع</th><th>الحالة</th><th></th></tr></thead><tbody>' +
         data.items.map(function (p) {
           var badge = p.Status === 'Cancelled' ? '<span class="badge badge-red">ملغاة</span>' : '<span class="badge badge-green">نشطة</span>';
           return '<tr><td>' + escapeHtml(p.ReceiptNumber) + '</td><td>' + escapeHtml(p.StudentCode) + '</td><td>' + escapeHtml(p.FeeType) +
-            '</td><td>' + escapeHtml(p.Installment) + '</td><td>' + escapeHtml(String(p.PaymentDate).substring(0, 10)) +
+            '</td><td>' + escapeHtml(p.Installment) + '</td><td>' + escapeHtml(p.PaymentType || '') + '</td><td>' + escapeHtml(String(p.PaymentDate).substring(0, 10)) +
             '</td><td class="num">' + fmtNum(p.NetDue) + '</td><td class="num">' + fmtNum(p.AmountPaid) + '</td><td>' + escapeHtml(p.PaymentMethod) +
             '</td><td>' + badge + '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + p.ReceiptNumber + '\')">إيصال</button></td></tr>';
         }).join('') +
@@ -715,9 +720,9 @@ function renderStatement(content) {
           '</tbody><tfoot><tr style="font-weight:700;"><td>الإجمالي</td><td class="num">' + fmtNum(d.totals.due) + '</td><td class="num">' + fmtNum(d.totals.discount) +
           '</td><td class="num">' + fmtNum(d.totals.due - d.totals.discount) + '</td><td class="num">' + fmtNum(d.totals.collected) + '</td><td class="num">' + fmtNum(d.totals.remaining) + '</td></tr></tfoot></table></div>' +
           '<h4 style="margin-top:18px;">عمليات التحصيل</h4>' +
-          '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>المبلغ</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
+          '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
           d.transactions.map(function (t) { return '<tr><td>' + escapeHtml(String(t.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(t.FeeType) +
-            '</td><td>' + escapeHtml(t.Installment) + '</td><td class="num">' + fmtNum(t.AmountPaid) + '</td><td>' + escapeHtml(t.PaymentMethod) +
+            '</td><td>' + escapeHtml(t.Installment) + '</td><td>' + escapeHtml(t.PaymentType || '') + '</td><td class="num">' + fmtNum(t.AmountPaid) + '</td><td>' + escapeHtml(t.PaymentMethod) +
             '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + t.ReceiptNumber + '\')">' + escapeHtml(t.ReceiptNumber) + '</button></td><td>' + escapeHtml(t.CreatedBy) + '</td></tr>'; }).join('') +
           '</tbody></table></div>';
       })
@@ -1056,7 +1061,7 @@ function receiptHtml_(data) {
   var s = data.student, t = data.totals;
   var linesRows = data.lines.map(function (l) {
     var cancelledTag = l.Status === 'Cancelled' ? ' (CANCELLED)' : '';
-    return '<tr><td>' + escapeHtml(l.FeeType) + cancelledTag + '</td><td>' + escapeHtml(l.Installment) + '</td><td style="text-align:left;">' + fmtNum(l.AmountPaid) + '</td></tr>';
+    return '<tr><td>' + escapeHtml(l.FeeType) + cancelledTag + '</td><td>' + escapeHtml(l.Installment) + '</td><td>' + escapeHtml(l.PaymentType || '') + '</td><td style="text-align:left;">' + fmtNum(l.AmountPaid) + '</td></tr>';
   }).join('');
   return '' +
     '<div style="font-family:\'Courier New\',monospace;font-size:13px;line-height:1.5;direction:ltr;text-align:left;">' +
@@ -1070,7 +1075,7 @@ function receiptHtml_(data) {
     'Department&nbsp;&nbsp;&nbsp;: ' + escapeHtml(s.Department || '-') + '</div>' +
     '<div style="border-top:1px dashed #000;margin:10px 0;"></div>' +
     '<table style="width:100%;border-collapse:collapse;"><thead><tr>' +
-    '<th style="text-align:left;">Fee Type</th><th style="text-align:left;">Installment</th><th style="text-align:left;">Amount</th></tr></thead>' +
+    '<th style="text-align:left;">Fee Type</th><th style="text-align:left;">Installment</th><th style="text-align:left;">Payment Type</th><th style="text-align:left;">Amount</th></tr></thead>' +
     '<tbody>' + linesRows + '</tbody></table>' +
     '<div style="border-top:1px dashed #000;margin:10px 0;"></div>' +
     '<div>Original Due' + pad_() + fmtNum(t.originalDue) + '<br>' +
