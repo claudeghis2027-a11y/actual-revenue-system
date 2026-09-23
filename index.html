@@ -10,6 +10,14 @@
   <div id="app" style="display:flex;min-height:100vh;width:100%;"><div id="root" style="display:flex;flex:1;min-width:0;"></div></div>
   <!-- SheetJS: reads .xlsx/.csv entirely client-side for the Student Import feature. Pinned version, no other dependency added. -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- html2canvas + jsPDF: real client-side PDF export. Arabic/RTL text has no reliable
+       support in jsPDF's built-in fonts without embedding a custom Arabic font (large,
+       fragile) — html2canvas rasterizes the already-correctly-rendered browser HTML
+       (which shapes Arabic/RTL natively, no library needed for that part), and jsPDF
+       embeds that image into a real PDF page. Tradeoff: PDF text is an image, not
+       selectable — documented as a known limitation, not hidden. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="JavaScript.js"></script>
 </body>
 </html>
