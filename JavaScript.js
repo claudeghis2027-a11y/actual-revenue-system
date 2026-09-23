@@ -1032,7 +1032,7 @@ function loadSettings_(content) {
         schedule.map(function (f) { return feeScheduleRow_(f); }).join('') +
         '</tbody></table></div>' +
 
-        '<details style="margin-top:14px;"><summary style="cursor:pointer;font-weight:600;">متقدم / إدخال يدوي (لحالات خاصة مثل قيم Stage غير القياسية مثل "G 9")</summary>' +
+        '<details id="advancedFeeScheduleDetails" style="margin-top:14px;"><summary style="cursor:pointer;font-weight:600;">متقدم / إدخال يدوي (لحالات خاصة مثل قيم Stage غير القياسية مثل "G 9")</summary>' +
         '<div class="form-grid" style="margin-top:8px;">' +
         field('المرحلة', '<input id="fsStage" placeholder="مثال: G1 أو G 9">') +
         field('القسم (اتركه فارغًا = كل الأقسام)', '<input id="fsDept" placeholder="AM / BR">') +
@@ -1092,9 +1092,11 @@ function loadSettings_(content) {
         var groupDef = EDUCATION_GROUPS[dept].filter(function (g) { return g.key === groupKey; })[0];
         var amount = document.getElementById('eduAmount').value;
         if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        var eduBtn = document.getElementById('saveEduGroupBtn');
+        eduBtn.disabled = true;
         apiCall('upsertFeeScheduleGroup', { academicYear: STATE.academicYear, department: dept, feeType: 'تعليم', stages: groupDef.stages, amount: amount })
           .then(function () { toast('تم حفظ رسوم ' + groupDef.label, 'success'); loadSettings_(content); })
-          .catch(function (err) { toast(err.message, 'error'); });
+          .catch(function (err) { toast(err.message, 'error'); eduBtn.disabled = false; });
       };
 
       // Fee schedule — Activity/Bus (single universal row)
@@ -1102,18 +1104,22 @@ function loadSettings_(content) {
         var feeType = document.getElementById('actBusType').value;
         var amount = document.getElementById('actBusAmount').value;
         if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        var actBusBtn = document.getElementById('saveActBusBtn');
+        actBusBtn.disabled = true;
         apiCall('upsertFeeSchedule', { academicYear: STATE.academicYear, stage: '', department: '', feeType: feeType, amount: amount })
           .then(function () { toast('تم حفظ رسوم ' + feeType, 'success'); loadSettings_(content); })
-          .catch(function (err) { toast(err.message, 'error'); });
+          .catch(function (err) { toast(err.message, 'error'); actBusBtn.disabled = false; });
       };
 
       // مواد إضافية — American only, not a Collection Type; blocked server-side if department != AM.
       document.getElementById('saveMaterialsBtn').onclick = function () {
         var amount = document.getElementById('materialsAmount').value;
         if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        var materialsBtn = document.getElementById('saveMaterialsBtn');
+        materialsBtn.disabled = true;
         apiCall('upsertFeeSchedule', { academicYear: STATE.academicYear, stage: '', department: 'AM', feeType: 'مواد إضافية', amount: amount })
           .then(function () { toast('تم حفظ مواد إضافية', 'success'); loadSettings_(content); })
-          .catch(function (err) { toast(err.message, 'error'); });
+          .catch(function (err) { toast(err.message, 'error'); materialsBtn.disabled = false; });
       };
 
       // Fee schedule — Advanced/Manual (raw entry, unchanged from before)
@@ -1124,9 +1130,11 @@ function loadSettings_(content) {
           amount: document.getElementById('fsAmount').value
         };
         if (!payload.stage || !payload.feeType || payload.amount === '') { toast('أكمل المرحلة ونوع الرسوم والمبلغ', 'error'); return; }
+        var addSchedBtn = document.getElementById('addScheduleBtn');
+        addSchedBtn.disabled = true;
         apiCall('upsertFeeSchedule', payload)
           .then(function () { toast('تم حفظ بند الرسوم', 'success'); loadSettings_(content); })
-          .catch(function (err) { toast(err.message, 'error'); });
+          .catch(function (err) { toast(err.message, 'error'); addSchedBtn.disabled = false; });
       };
       document.querySelectorAll('.fs-edit').forEach(function (btn) {
         btn.onclick = function () {
@@ -1134,7 +1142,22 @@ function loadSettings_(content) {
           document.getElementById('fsDept').value = btn.getAttribute('data-dept');
           document.getElementById('fsFeeType').value = btn.getAttribute('data-feetype');
           document.getElementById('fsAmount').value = btn.getAttribute('data-amount');
+          // ROOT CAUSE FIX (Issue 3): these fields live inside a collapsed <details> — a
+          // click populated them correctly all along, but the section stayed closed,
+          // so nothing visible ever changed. Opening it here is what was missing.
+          document.getElementById('advancedFeeScheduleDetails').open = true;
           document.getElementById('fsStage').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        };
+      });
+      document.querySelectorAll('.fs-delete').forEach(function (btn) {
+        btn.onclick = function () {
+          var stage = btn.getAttribute('data-stage'), dept = btn.getAttribute('data-dept'), feeType = btn.getAttribute('data-feetype');
+          var label = (stage || 'الكل') + ' / ' + (dept || 'الكل') + ' / ' + feeType;
+          if (!confirm('هل تريد حذف بند الرسوم: ' + label + '؟')) return;
+          btn.disabled = true;
+          apiCall('deleteFeeSchedule', { academicYear: STATE.academicYear, stage: stage, department: dept, feeType: feeType })
+            .then(function () { toast('تم حذف البند', 'success'); loadSettings_(content); })
+            .catch(function (err) { toast(err.message, 'error'); btn.disabled = false; });
         };
       });
     })
@@ -1171,8 +1194,10 @@ function bindRuleSaveButtons_() {
 
 function feeScheduleRow_(f) {
   return '<tr><td>' + escapeHtml(f.Stage || 'الكل') + '</td><td>' + escapeHtml(f.Department || 'الكل') + '</td><td>' + escapeHtml(f.FeeType) +
-    '</td><td class="num">' + fmtNum(f.Amount) + '</td><td><button class="btn btn-secondary btn-sm fs-edit" ' +
-    'data-stage="' + escapeHtml(f.Stage) + '" data-dept="' + escapeHtml(f.Department || '') + '" data-feetype="' + escapeHtml(f.FeeType) + '" data-amount="' + escapeHtml(f.Amount) + '">تعديل</button></td></tr>';
+    '</td><td class="num">' + fmtNum(f.Amount) + '</td><td style="display:flex;gap:6px;"><button class="btn btn-secondary btn-sm fs-edit" ' +
+    'data-stage="' + escapeHtml(f.Stage) + '" data-dept="' + escapeHtml(f.Department || '') + '" data-feetype="' + escapeHtml(f.FeeType) + '" data-amount="' + escapeHtml(f.Amount) + '">تعديل</button>' +
+    '<button class="btn btn-danger btn-sm fs-delete" data-stage="' + escapeHtml(f.Stage) + '" data-dept="' + escapeHtml(f.Department || '') +
+    '" data-feetype="' + escapeHtml(f.FeeType) + '">حذف</button></td></tr>';
 }
 
 /* ============================ Users (Administrator only) ============================ */
@@ -1483,6 +1508,7 @@ function importSummaryHtml_(s, isFinal) {
 
 /* ============================ Boot ============================ */
 document.addEventListener('DOMContentLoaded', function () {
-  if (STATE.token) { apiCall('ping', {}, { retries: false }).then(renderApp).catch(function () { doLogout(true); }); }
-  else { renderApp(); }
+  // getDashboardSummary's own SESSION_EXPIRED handling already triggers doLogout(true) —
+  // a separate ping pre-check was a redundant extra round-trip before first render.
+  renderApp();
 });
