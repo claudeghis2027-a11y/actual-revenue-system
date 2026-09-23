@@ -269,17 +269,25 @@ function renderDashboard(content) {
   apiCall('getDashboardSummary', { academicYear: STATE.academicYear })
     .then(function (s) {
       content.innerHTML =
-        '<div class="cards-row">' +
+        '<div class="panel"><div class="panel-header"><h3>لوحة التحكم</h3><div>' + exportToolbarHtml_('dash') + '</div></div>' +
+        '<div class="panel-body"><div class="cards-row">' +
         statCard('إجمالي الإيرادات المحصلة', fmtNum(s.totalRevenue) + ' ج.م', 'accent-green') +
         statCard('عدد عمليات التحصيل', fmtNum(s.transactionCount), 'accent-blue') +
         statCard('إجمالي المتبقي على الطلاب', fmtNum(s.totalRemaining) + ' ج.م', 'accent-red') +
         statCard('عدد الطلاب', fmtNum(s.studentCount), '') +
-        '</div>' +
+        '</div></div></div>' +
         '<div class="panel"><div class="panel-header"><h3>روابط سريعة</h3></div><div class="panel-body" style="display:flex;gap:10px;flex-wrap:wrap;">' +
         '<button class="btn btn-primary" onclick="navigate(\'collect\')">+ تحصيل دفعة جديدة</button>' +
         '<button class="btn btn-secondary" onclick="navigate(\'report_revenue\')">تقرير الإيرادات</button>' +
         '<button class="btn btn-secondary" onclick="navigate(\'report_remaining\')">المتبقي على الطلاب</button>' +
         '</div></div>';
+      // Dashboard print/PDF: ONLY the 4 summary cards — never the quick-links panel, no Excel (no tabular dataset).
+      var dashBody = '<div class="cards-row">' +
+        statCard('إجمالي الإيرادات المحصلة', fmtNum(s.totalRevenue) + ' ج.م', '') +
+        statCard('عدد عمليات التحصيل', fmtNum(s.transactionCount), '') +
+        statCard('إجمالي المتبقي على الطلاب', fmtNum(s.totalRemaining) + ' ج.م', '') +
+        statCard('عدد الطلاب', fmtNum(s.studentCount), '') + '</div>';
+      bindExportToolbar_('dash', 'لوحة التحكم', function () { return dashBody; });
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { navigate('dashboard'); }); });
 }
@@ -306,7 +314,7 @@ function renderStudents(content, page, preserveFocus) {
         panelHeader('قائمة الطلاب', '<div class="filters-row">' +
           '<div class="field"><label>بحث</label><input id="stuSearch" class="search-box" placeholder="الكود أو الاسم" value="' + escapeHtml(search) + '" autocomplete="off"></div>' +
           '<button class="btn btn-secondary" id="stuSearchBtn">بحث</button>' +
-          '<button class="btn btn-secondary" id="stuExportBtn">تصدير Excel</button>' +
+          exportToolbarHtml_('stu') + '<button class="btn btn-secondary" id="stuExcelBtn">&#128202; Excel</button>' +
           importBtnHtml +
           '</div>') +
         '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>القسم</th></tr></thead><tbody>' +
@@ -333,9 +341,7 @@ function renderStudents(content, page, preserveFocus) {
           renderStudents(content, 1);
         }
       });
-      document.getElementById('stuExportBtn').onclick = function () {
-        exportExcel_('students', { academicYear: STATE.academicYear, search: search }, 'الطلاب', document.getElementById('stuExportBtn'));
-      };
+      bindExportToolbar_('stu', 'قائمة الطلاب', getScreenPrintableContent_, 'students', function () { return { academicYear: STATE.academicYear, search: search }; });
       var importBtn = document.getElementById('stuImportBtn');
       if (importBtn) importBtn.onclick = function () { openStudentImportModal_(content, studentsPage); };
 
@@ -352,12 +358,16 @@ function renderStudents(content, page, preserveFocus) {
 function openStudentDetailModal_(studentCode) {
   var backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
-  backdrop.innerHTML = '<div class="modal" style="width:min(720px,94vw);"><div class="modal-header"><h3>بيانات الطالب</h3><button class="close-x">&times;</button></div><div class="modal-body" id="studentDetailBody">' + loadingBox() + '</div></div>';
+  backdrop.innerHTML = '<div class="modal" style="width:min(720px,94vw);"><div class="modal-header"><h3>بيانات الطالب</h3><button class="close-x">&times;</button></div>' +
+    '<div class="modal-body" id="studentDetailBody">' + loadingBox() + '</div>' +
+    '<div class="modal-footer"><button class="btn btn-secondary btn-sm" id="studentDetailPrintBtn" disabled>&#128424; طباعة</button></div></div>';
   document.body.appendChild(backdrop);
   backdrop.querySelector('.close-x').onclick = function () { backdrop.remove(); };
+  var lastData = null;
 
   apiCall('getStudentStatement', { studentCode: studentCode, academicYear: STATE.academicYear })
     .then(function (d) {
+      lastData = d;
       var s = d.student, t = d.totals;
       var activeBadge = (s.Active === true || String(s.Active).toUpperCase() === 'TRUE')
         ? '<span class="badge badge-green">نشط</span>' : '<span class="badge badge-red">غير نشط</span>';
@@ -379,8 +389,38 @@ function openStudentDetailModal_(studentCode) {
             '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + tx.ReceiptNumber + '\')">' + escapeHtml(tx.ReceiptNumber) + '</button></td><td>' + escapeHtml(tx.CreatedBy) + '</td></tr>';
         }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">لا توجد مدفوعات بعد</td></tr>') +
         '</tbody></table></div>';
+      document.getElementById('studentDetailPrintBtn').disabled = false;
     })
     .catch(function (err) { document.getElementById('studentDetailBody').innerHTML = errorBox(err.message, function () { openStudentDetailModal_(studentCode); }); });
+
+  // Prints ONLY this modal's data — built fresh from the already-fetched statement, not a DOM
+  // clone, so the background Students page, the modal's own close/print buttons, and the modal
+  // chrome never appear. Receipt numbers are plain text here, never a clickable button.
+  document.getElementById('studentDetailPrintBtn').onclick = function () {
+    if (!lastData) return;
+    var s = lastData.student, t = lastData.totals;
+    var activeText = (s.Active === true || String(s.Active).toUpperCase() === 'TRUE') ? 'نشط' : 'غير نشط';
+    var body =
+      '<h3 style="margin-top:0;">' + escapeHtml(s.StudentName) + '</h3>' +
+      '<table style="margin-bottom:14px;"><tbody>' +
+      '<tr><td><b>الكود</b></td><td>' + escapeHtml(s.StudentCode) + '</td><td><b>المرحلة</b></td><td>' + escapeHtml(s.Stage) + '</td></tr>' +
+      '<tr><td><b>الفصل</b></td><td>' + escapeHtml(s.ClassName) + '</td><td><b>القسم</b></td><td>' + escapeHtml(s.Department) + '</td></tr>' +
+      '<tr><td><b>الحالة</b></td><td colspan="3">' + activeText + '</td></tr>' +
+      '</tbody></table>' +
+      '<table style="margin-bottom:14px;"><tbody>' +
+      '<tr><td><b>إجمالي المستحق</b></td><td>' + fmtNum(t.due) + '</td><td><b>إجمالي الخصم</b></td><td>' + fmtNum(t.discount) + '</td></tr>' +
+      '<tr><td><b>إجمالي المحصل</b></td><td>' + fmtNum(t.collected) + '</td><td><b>إجمالي المتبقي</b></td><td>' + fmtNum(t.remaining) + '</td></tr>' +
+      '</tbody></table>' +
+      '<h4>المدفوعات السابقة</h4>' +
+      '<table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>المبلغ المحصل</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
+      (lastData.transactions.length ? lastData.transactions.map(function (tx) {
+        return '<tr><td>' + escapeHtml(String(tx.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(tx.FeeType) + '</td><td>' + escapeHtml(installmentDisplay_(tx)) +
+          '</td><td>' + escapeHtml(tx.PaymentType || '') + '</td><td>' + fmtNum(tx.AmountPaid) + '</td><td>' + escapeHtml(tx.PaymentMethod) +
+          '</td><td>' + escapeHtml(tx.ReceiptNumber) + '</td><td>' + escapeHtml(tx.CreatedBy) + '</td></tr>';
+      }).join('') : '<tr><td colspan="8" style="text-align:center;">لا توجد مدفوعات بعد</td></tr>') +
+      '</tbody></table>';
+    printReport_('بيانات الطالب — ' + s.StudentName, body);
+  };
 }
 
 function panelHeader(title, rightHtml) {
@@ -415,7 +455,7 @@ function renderCollect(content) {
       collectCtx.selectedStudent = null; collectCtx.selectedStudentSummary = null;
 
       content.innerHTML = '' +
-        '<div class="panel"><div class="panel-header"><h3 id="collectTitle">تحصيل دفعة</h3></div><div class="panel-body">' +
+        '<div class="panel"><div class="panel-header"><h3 id="collectTitle">تحصيل دفعة</h3><div>' + exportToolbarHtml_('col') + '</div></div><div class="panel-body">' +
         '<div class="field full" style="position:relative;max-width:420px;">' +
         '<label>اختر الطالب (بالكود أو الاسم)</label>' +
         '<input id="pStudentSearch" placeholder="ابحث بالكود أو اسم الطالب" autocomplete="off">' +
@@ -443,6 +483,17 @@ function renderCollect(content) {
       document.getElementById('addLineBtn').onclick = function () { addCollectBlock_(); };
       document.getElementById('pSaveBtn').onclick = function () { submitPayment_(content); };
       document.getElementById('pDate').addEventListener('change', function () { reSuggestAllDepositInstallments_(); });
+      // Print/PDF only here — no Excel (a collection entry form has no meaningful tabular
+      // dataset to export, per spec). Prints the already-loaded student summary only — never
+      // the entry form/installment blocks themselves, which are interactive input, not report content.
+      document.getElementById('colPrintBtn').onclick = function () {
+        if (!collectCtx.selectedStudentSummary) { toast('اختر الطالب أولًا', 'error'); return; }
+        printReport_('ملخص تحصيل — ' + collectCtx.selectedStudentSummary.student.StudentName, collectSummaryPrintBody_());
+      };
+      document.getElementById('colPdfBtn').onclick = function () {
+        if (!collectCtx.selectedStudentSummary) { toast('اختر الطالب أولًا', 'error'); return; }
+        exportPdf_('ملخص تحصيل — ' + collectCtx.selectedStudentSummary.student.StudentName, collectSummaryPrintBody_(), document.getElementById('colPdfBtn'));
+      };
       bindCollectStudentSearch_(content);
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderCollect(content); }); });
@@ -531,6 +582,20 @@ function loadCollectStudentSummary_(content) {
       if (!document.getElementById('collectLines').children.length) addCollectBlock_();
     })
     .catch(function (err) { card.innerHTML = errorBox(err.message, function () { loadCollectStudentSummary_(content); }); });
+}
+
+/** The "meaningful summary" for Collect Payment print/PDF — student info + totals only, built from data already loaded by loadCollectStudentSummary_ (zero extra calls). Never the entry form/blocks. */
+function collectSummaryPrintBody_() {
+  var d = collectCtx.selectedStudentSummary, s = d.student, t = d.totals;
+  return '<h3 style="margin-top:0;">' + escapeHtml(s.StudentName) + '</h3>' +
+    '<table style="margin-bottom:14px;"><tbody>' +
+    '<tr><td><b>الكود</b></td><td>' + escapeHtml(s.StudentCode) + '</td><td><b>المرحلة</b></td><td>' + escapeHtml(s.Stage) + '</td></tr>' +
+    '<tr><td><b>الفصل</b></td><td>' + escapeHtml(s.ClassName) + '</td><td><b>القسم</b></td><td>' + escapeHtml(s.Department) + '</td></tr>' +
+    '</tbody></table>' +
+    '<table><tbody>' +
+    '<tr><td><b>إجمالي المستحق</b></td><td>' + fmtNum(t.due) + '</td><td><b>إجمالي الخصم</b></td><td>' + fmtNum(t.discount) + '</td></tr>' +
+    '<tr><td><b>إجمالي المحصل</b></td><td>' + fmtNum(t.collected) + '</td><td><b>المتبقي</b></td><td>' + fmtNum(t.remaining) + '</td></tr>' +
+    '</tbody></table>';
 }
 
 /**
@@ -826,7 +891,7 @@ function renderPayments(content, page) {
   apiCall('listPayments', { academicYear: STATE.academicYear, page: paymentsPage, pageSize: 25 })
     .then(function (data) {
       content.innerHTML =
-        panelHeader('سجل المدفوعات', '<button class="btn btn-secondary" id="payExportBtn">تصدير Excel</button>') +
+        panelHeader('سجل المدفوعات', exportToolbarHtml_('pay') + '<button class="btn btn-secondary" id="payExcelBtn">&#128202; Excel</button>') +
         '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>الطالب</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>التاريخ</th>' +
         '<th>صافي المستحق</th><th>المحصل</th><th>طريقة الدفع</th><th>الحالة</th><th></th></tr></thead><tbody>' +
         data.items.map(function (p) {
@@ -837,9 +902,7 @@ function renderPayments(content, page) {
             '</td><td>' + badge + '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + p.ReceiptNumber + '\')">إيصال</button></td></tr>';
         }).join('') +
         '</tbody></table></div>' + paginationBar(data, function (p) { renderPayments(content, p); }) + '</div>';
-      document.getElementById('payExportBtn').onclick = function () {
-        exportExcel_('payments', { academicYear: STATE.academicYear }, 'سجل المدفوعات', document.getElementById('payExportBtn'));
-      };
+      bindExportToolbar_('pay', 'سجل المدفوعات', getScreenPrintableContent_, 'payments', function () { return { academicYear: STATE.academicYear }; });
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderPayments(content, paymentsPage); }); });
 }
@@ -860,6 +923,9 @@ function renderReportRevenue(content) {
           }).join('') + '</tbody></table></div>' + paginationBar(data, load) + '</div>';
         bindDateFilter_(function () { from = document.getElementById('fFrom').value; to = document.getElementById('fTo').value; load(1); });
         bindExport_(function (btn) { exportExcel_('revenue', { academicYear: STATE.academicYear, dateFrom: from, dateTo: to }, 'الإيرادات', btn); });
+        bindExportToolbar_('f', 'تقرير الإيرادات', function () {
+          return '<div style="margin-bottom:8px;">الفترة: ' + escapeHtml(from) + ' إلى ' + escapeHtml(to) + '</div>' + getScreenPrintableContent_();
+        });
       })
       .catch(function (err) { content.innerHTML = errorBox(err.message, function () { load(page); }); });
   }
@@ -870,7 +936,7 @@ function filterDates_() {
     field('من تاريخ', '<input type="date" id="fFrom" value="' + todayStr_() + '">') +
     field('إلى تاريخ', '<input type="date" id="fTo" value="' + todayStr_() + '">') +
     '<button class="btn btn-secondary" id="fApply">تطبيق</button>' +
-    '<button class="btn btn-secondary" id="fExport">تصدير Excel</button></div>';
+    exportToolbarHtml_('f') + '<button class="btn btn-secondary" id="fExport">&#128202; Excel</button></div>';
 }
 function bindDateFilter_(fn) { var b = document.getElementById('fApply'); if (b) b.onclick = fn; }
 function bindExport_(fn) { var b = document.getElementById('fExport'); if (b) b.onclick = function () { fn(b); }; }
@@ -881,7 +947,7 @@ function renderReportRemaining(content, page) {
   apiCall('reportRemainingBalance', { academicYear: STATE.academicYear, page: remainingPage, pageSize: 25 })
     .then(function (data) {
       content.innerHTML =
-        panelHeader('المتبقي على الطلاب', '<button class="btn btn-secondary" id="remExport">تصدير Excel</button>') +
+        panelHeader('المتبقي على الطلاب', exportToolbarHtml_('rem') + '<button class="btn btn-secondary" id="remExcelBtn">&#128202; Excel</button>') +
         '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>الأصل</th><th>الخصم</th><th>الصافي</th><th>المحصل</th><th>المتبقي</th></tr></thead><tbody>' +
         data.items.map(function (r) {
           return '<tr><td>' + escapeHtml(r.studentCode) + '</td><td>' + escapeHtml(r.studentName) + '</td><td>' + escapeHtml(r.stage) +
@@ -889,9 +955,7 @@ function renderReportRemaining(content, page) {
             '</td><td class="num">' + fmtNum(r.netDue) + '</td><td class="num">' + fmtNum(r.collected) + '</td><td class="num">' +
             (r.remaining > 0 ? '<span class="badge badge-red">' + fmtNum(r.remaining) + '</span>' : '<span class="badge badge-green">0</span>') + '</td></tr>';
         }).join('') + '</tbody></table></div>' + paginationBar(data, function (p) { renderReportRemaining(content, p); }) + '</div>';
-      document.getElementById('remExport').onclick = function () {
-        exportExcel_('remaining', { academicYear: STATE.academicYear }, 'المتبقي', document.getElementById('remExport'));
-      };
+      bindExportToolbar_('rem', 'المتبقي على الطلاب', getScreenPrintableContent_, 'remaining', function () { return { academicYear: STATE.academicYear }; });
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderReportRemaining(content, remainingPage); }); });
 }
@@ -901,8 +965,10 @@ function renderStatement(content) {
   content.innerHTML =
     '<div class="panel"><div class="panel-header"><h3>كشف حساب طالب</h3>' +
     '<div class="filters-row">' + field('كود الطالب', '<input id="stCode" placeholder="STU1001">') +
-    '<button class="btn btn-primary" id="stLoadBtn">عرض</button></div></div>' +
+    '<button class="btn btn-primary" id="stLoadBtn">عرض</button>' + exportToolbarHtml_('st') +
+    '<button class="btn btn-secondary" id="stExcelBtn">&#128202; Excel</button></div></div>' +
     '<div class="panel-body" id="stBody"></div></div>';
+  var lastStatement = null;
   document.getElementById('stLoadBtn').onclick = function () {
     var code = document.getElementById('stCode').value.trim();
     if (!code) return;
@@ -910,6 +976,7 @@ function renderStatement(content) {
     body.innerHTML = loadingBox();
     apiCall('getStudentStatement', { studentCode: code, academicYear: STATE.academicYear })
       .then(function (d) {
+        lastStatement = d;
         body.innerHTML =
           '<h4>' + escapeHtml(d.student.StudentName) + ' — ' + escapeHtml(d.student.StudentCode) + '</h4>' +
           '<p style="color:var(--text-muted);font-size:13px;">' + escapeHtml(d.student.Stage) + ' / ' + escapeHtml(d.student.ClassName) + ' / ' + escapeHtml(d.student.Department) + '</p>' +
@@ -926,6 +993,34 @@ function renderStatement(content) {
           '</tbody></table></div>';
       })
       .catch(function (err) { body.innerHTML = errorBox(err.message, function () { document.getElementById('stLoadBtn').click(); }); });
+  };
+  document.getElementById('stPrintBtn').onclick = function () {
+    if (!lastStatement) { toast('اعرض كشف حساب أولًا', 'error'); return; }
+    printReport_('كشف حساب — ' + lastStatement.student.StudentName, getScreenPrintableContent_());
+  };
+  document.getElementById('stPdfBtn').onclick = function () {
+    if (!lastStatement) { toast('اعرض كشف حساب أولًا', 'error'); return; }
+    exportPdf_('كشف حساب — ' + lastStatement.student.StudentName, getScreenPrintableContent_(), document.getElementById('stPdfBtn'));
+  };
+  // Statement data is already fully loaded client-side (one student, one call) — no server Excel
+  // report exists for this and none is needed; SheetJS (already loaded for Student Import) builds
+  // the .xlsx directly from what's already in memory, zero extra API calls.
+  document.getElementById('stExcelBtn').onclick = function () {
+    if (!lastStatement) { toast('اعرض كشف حساب أولًا', 'error'); return; }
+    var d = lastStatement;
+    var wb = XLSX.utils.book_new();
+    var summarySheet = XLSX.utils.json_to_sheet(d.lines.map(function (l) {
+      return { 'نوع الرسوم': l.feeType, 'المستحق': l.originalDue, 'الخصم': l.discount, 'الصافي': l.netDue, 'المحصل': l.collected, 'المتبقي': l.remaining };
+    }));
+    XLSX.utils.book_append_sheet(wb, summarySheet, 'الملخص');
+    var txSheet = XLSX.utils.json_to_sheet(d.transactions.map(function (t) {
+      return {
+        'التاريخ': String(t.PaymentDate).substring(0, 10), 'نوع الرسوم': t.FeeType, 'القسط': installmentDisplay_(t),
+        'نوع الدفعة': t.PaymentType || '', 'المبلغ': t.AmountPaid, 'طريقة الدفع': t.PaymentMethod, 'الإيصال': t.ReceiptNumber, 'بواسطة': t.CreatedBy
+      };
+    }));
+    XLSX.utils.book_append_sheet(wb, txSheet, 'عمليات التحصيل');
+    XLSX.writeFile(wb, 'كشف حساب - ' + d.student.StudentCode + '.xlsx');
   };
 }
 
@@ -953,7 +1048,8 @@ var EDUCATION_GROUPS = {
 
 function renderSettings(content) {
   content.innerHTML =
-    '<div class="panel"><div class="panel-header"><h3>السنوات الدراسية وبنود الرسوم وقواعد السداد</h3></div><div class="panel-body" id="setBody">' + loadingBox() + '</div></div>';
+    '<div class="panel"><div class="panel-header"><h3>السنوات الدراسية وبنود الرسوم وقواعد السداد</h3><div>' + exportToolbarHtml_('set') +
+    '<button class="btn btn-secondary btn-sm" id="setExcelBtn">&#128202; Excel</button></div></div><div class="panel-body" id="setBody">' + loadingBox() + '</div></div>';
   loadSettings_(content);
 }
 
@@ -1160,6 +1256,19 @@ function loadSettings_(content) {
             .catch(function (err) { toast(err.message, 'error'); btn.disabled = false; });
         };
       });
+
+      document.getElementById('setPrintBtn').onclick = function () { printReport_('الإعدادات', getScreenPrintableContent_()); };
+      document.getElementById('setPdfBtn').onclick = function () { exportPdf_('الإعدادات', getScreenPrintableContent_(), document.getElementById('setPdfBtn')); };
+      // Settings data is already fully loaded client-side (one Promise.all on screen entry) —
+      // SheetJS builds the .xlsx directly from what's already in memory, zero extra API calls.
+      document.getElementById('setExcelBtn').onclick = function () {
+        var wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(years.map(function (y) { return { 'السنة': y.Key, 'البداية': y.From, 'النهاية': y.To }; })), 'السنوات الدراسية');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(installments.map(function (i) { return { 'رقم القسط': i.InstallmentNo, 'الاسم': i.Label, 'من': i.StartDate, 'إلى': i.EndDate }; })), 'الأقساط');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rules.map(function (r) { return { 'نوع الرسوم': r.feeType, 'القسط 1 %': r.percent1, 'القسط 2 %': r.percent2, 'القسط 3 %': r.percent3 }; })), 'قواعد السداد');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(schedule.map(function (f) { return { 'المرحلة': f.Stage || 'الكل', 'القسم': f.Department || 'الكل', 'نوع الرسوم': f.FeeType, 'المبلغ': f.Amount }; })), 'لائحة الرسوم');
+        XLSX.writeFile(wb, 'الإعدادات - ' + STATE.academicYear + '.xlsx');
+      };
     })
     .catch(function (err) { document.getElementById('setBody').innerHTML = errorBox(err.message, function () { loadSettings_(content); }); });
 }
@@ -1202,7 +1311,7 @@ function feeScheduleRow_(f) {
 
 /* ============================ Users (Administrator only) ============================ */
 function renderUsers(content) {
-  content.innerHTML = '<div class="panel"><div class="panel-header"><h3>المستخدمون</h3></div><div class="panel-body" id="usersBody">' + loadingBox() + '</div></div>';
+  content.innerHTML = '<div class="panel"><div class="panel-header"><h3>المستخدمون</h3><div>' + exportToolbarHtml_('usr') + '</div></div><div class="panel-body" id="usersBody">' + loadingBox() + '</div></div>';
   loadUsers_(content);
 }
 function loadUsers_(content) {
@@ -1227,6 +1336,8 @@ function loadUsers_(content) {
         field('الدور', selectHtml('nuRole', ['Administrator', 'Collection User', 'Reports User'])) +
         '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="addUserBtn">إنشاء مستخدم</button></div>' +
         '</div>';
+      document.getElementById('usrPrintBtn').onclick = function () { printReport_('المستخدمون', getScreenPrintableContent_()); };
+      document.getElementById('usrPdfBtn').onclick = function () { exportPdf_('المستخدمون', getScreenPrintableContent_(), document.getElementById('usrPdfBtn')); };
 
       document.querySelectorAll('.user-toggle').forEach(function (btn) {
         btn.onclick = function () {
@@ -1345,15 +1456,19 @@ function renderReceiptSearch(content) {
   content.innerHTML =
     '<div class="panel"><div class="panel-header"><h3>بحث عن إيصال</h3>' +
     '<div class="filters-row">' + field('رقم الإيصال / كود الطالب / اسم الطالب', '<input id="rsQuery" class="search-box" placeholder="ابحث هنا...">') +
-    '<button class="btn btn-primary" id="rsBtn">بحث</button></div></div>' +
+    '<button class="btn btn-primary" id="rsBtn">بحث</button>' + exportToolbarHtml_('rs') +
+    '<button class="btn btn-secondary" id="rsExcelBtn">&#128202; Excel</button></div></div>' +
     '<div class="panel-body" id="rsBody" style="padding:0;"></div></div>';
+  var lastQuery = '', lastResults = [];
   function run() {
     var q = document.getElementById('rsQuery').value.trim();
     if (!q) return;
+    lastQuery = q;
     var body = document.getElementById('rsBody');
     body.innerHTML = loadingBox();
     apiCall('searchReceipts', { query: q, academicYear: STATE.academicYear })
       .then(function (list) {
+        lastResults = list;
         if (!list.length) { body.innerHTML = '<div class="state-box">لا توجد نتائج</div>'; return; }
         body.innerHTML = '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>كود الطالب</th><th>اسم الطالب</th><th>التاريخ</th><th>الإجمالي</th><th></th></tr></thead><tbody>' +
           list.map(function (r) {
@@ -1366,9 +1481,165 @@ function renderReceiptSearch(content) {
   }
   document.getElementById('rsBtn').onclick = run;
   document.getElementById('rsQuery').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+  document.getElementById('rsPrintBtn').onclick = function () {
+    if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
+    printReport_('نتائج البحث عن إيصال — ' + lastQuery, getScreenPrintableContent_());
+  };
+  document.getElementById('rsPdfBtn').onclick = function () {
+    if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
+    exportPdf_('نتائج البحث عن إيصال — ' + lastQuery, getScreenPrintableContent_(), document.getElementById('rsPdfBtn'));
+  };
+  // Results are already fully loaded client-side (one search call) — SheetJS builds the .xlsx
+  // directly from what's already in memory, respecting the current search, zero extra API calls.
+  document.getElementById('rsExcelBtn').onclick = function () {
+    if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
+    var sheet = XLSX.utils.json_to_sheet(lastResults.map(function (r) {
+      return { 'رقم الإيصال': r.receiptNumber, 'كود الطالب': r.studentCode, 'اسم الطالب': r.studentName, 'التاريخ': String(r.paymentDate).substring(0, 10), 'الإجمالي': r.amountPaid };
+    }));
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'نتائج البحث');
+    XLSX.writeFile(wb, 'بحث إيصال - ' + lastQuery + '.xlsx');
+  };
 }
 
-/* ============================ Excel export (currently-filtered view) ============================ */
+/* ============================ Print / PDF (generic, reusable) ============================ */
+/**
+ * Shared wrapper: title + academic year + generation date + body HTML,
+ * used by BOTH Print and PDF so the two always show identical content.
+ * The existing receiptHtml_()/printReceipt_() are untouched and unrelated —
+ * receipts keep their own dedicated English-only format exactly as before.
+ */
+function buildPrintableHtml_(title, bodyHtml) {
+  var now = new Date();
+  return '' +
+    '<div style="font-family:Tahoma,Arial,sans-serif;direction:rtl;text-align:right;padding:16px;color:#111;">' +
+    '<h2 style="margin:0 0 4px;">' + escapeHtml(title) + '</h2>' +
+    '<div style="font-size:12.5px;color:#555;margin-bottom:14px;">' +
+    'العام الدراسي: ' + escapeHtml(STATE.academicYear) + ' &nbsp;|&nbsp; تاريخ الإصدار: ' + now.toLocaleString('en-GB') +
+    '</div>' + bodyHtml + '</div>';
+}
+
+/**
+ * Removes/converts interactive controls so only meaningful report content
+ * prints: buttons are dropped (except a receipt-number button, which becomes
+ * plain text — same value, just not clickable, per spec); form controls
+ * inside a table (e.g. Settings' editable percentage cells) become plain
+ * text showing their current value (real data, must not vanish); form
+ * controls outside a table (search boxes, filter inputs, "add new" forms)
+ * are removed entirely — they are input tools, not report content.
+ */
+function sanitizeForPrint_(container) {
+  container.querySelectorAll('button').forEach(function (btn) {
+    var onclick = btn.getAttribute('onclick') || '';
+    if (onclick.indexOf('openReceipt_') !== -1) {
+      var span = document.createElement('span');
+      span.textContent = btn.textContent;
+      btn.replaceWith(span);
+    } else {
+      btn.remove();
+    }
+  });
+  container.querySelectorAll('table input, table select').forEach(function (el) {
+    var span = document.createElement('span');
+    span.textContent = el.tagName === 'SELECT' ? (el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value) : el.value;
+    el.replaceWith(span);
+  });
+  container.querySelectorAll('input, select, textarea').forEach(function (el) {
+    var field = el.closest('.field');
+    if (field) field.remove(); else el.remove();
+  });
+  container.querySelectorAll('.filters-row, .pagination').forEach(function (el) { el.remove(); });
+  container.querySelectorAll('details').forEach(function (d) { if (!d.querySelector('table, .cards-row')) d.remove(); });
+  return container;
+}
+
+/** Clones the current screen's panels and sanitizes them — the generic "meaningful content" source for most screens. */
+function getScreenPrintableContent_() {
+  var wrap = document.createElement('div');
+  document.querySelectorAll('#content .panel').forEach(function (p) { wrap.appendChild(p.cloneNode(true)); });
+  sanitizeForPrint_(wrap);
+  return wrap.innerHTML;
+}
+
+/** Opens a temporary print window with the given title/body, prints, and closes — never touches the live screen DOM. */
+function printReport_(title, bodyHtml) {
+  var w = window.open('', '_blank', 'width=900,height=700');
+  w.document.write('<html dir="rtl"><head><title>' + escapeHtml(title) + '</title>' +
+    '<style>body{margin:0;}table{width:100%;border-collapse:collapse;font-size:12.5px;}th,td{border:1px solid #ccc;padding:6px 8px;text-align:right;}th{background:#f3f4f6;}</style>' +
+    '</head><body>' + buildPrintableHtml_(title, bodyHtml) + '</body></html>');
+  w.document.close();
+  w.focus();
+  setTimeout(function () { w.print(); }, 300);
+}
+
+/**
+ * Real PDF via html2canvas (rasterizes the correctly-RTL-rendered HTML) + jsPDF
+ * (embeds that image into an actual PDF page, splitting across pages if tall).
+ * The temporary container is rendered off-screen and removed immediately after
+ * capture — the live screen DOM is never modified.
+ */
+function exportPdf_(title, bodyHtml, btnEl) {
+  if (typeof html2canvas === 'undefined' || typeof jspdf === 'undefined') {
+    toast('تعذر تحميل مكتبة PDF — تحقق من الاتصال بالإنترنت وأعد المحاولة', 'error');
+    return;
+  }
+  var originalText = btnEl ? btnEl.textContent : null;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'جارٍ إنشاء PDF...'; }
+
+  var holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;top:0;left:-99999px;width:800px;background:#fff;';
+  holder.innerHTML = buildPrintableHtml_(title, bodyHtml);
+  document.body.appendChild(holder);
+
+  html2canvas(holder, { scale: 2, backgroundColor: '#ffffff' })
+    .then(function (canvas) {
+      document.body.removeChild(holder);
+      var jsPDF = window.jspdf.jsPDF;
+      var pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      var pageWidth = pdf.internal.pageSize.getWidth();
+      var pageHeight = pdf.internal.pageSize.getHeight();
+      var imgWidth = pageWidth;
+      var imgHeight = (canvas.height * imgWidth) / canvas.width;
+      var imgData = canvas.toDataURL('image/png');
+
+      if (imgHeight <= pageHeight) {
+        pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+      } else {
+        // Split the tall image across multiple A4 pages.
+        var remaining = imgHeight, position = 0;
+        while (remaining > 0) {
+          pdf.addImage(imgData, 'PNG', 0, position === 0 ? 0 : -(imgHeight - remaining), imgWidth, imgHeight);
+          remaining -= pageHeight;
+          if (remaining > 0) pdf.addPage();
+          position += pageHeight;
+        }
+      }
+      pdf.save(title.replace(/[^A-Za-z0-9\u0600-\u06FF _-]/g, '') + '.pdf');
+    })
+    .catch(function () { document.body.removeChild(holder); toast('تعذر إنشاء PDF', 'error'); })
+    .finally(function () { if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; } });
+}
+
+/**
+ * Standard 3-button toolbar. printFn/pdfFn are called with no args and must
+ * read the current screen content themselves (so the toolbar HTML stays the
+ * same everywhere); excelReport (an exportExcel_ report key) is optional —
+ * omit it for screens with no meaningful tabular dataset (e.g. Dashboard,
+ * Collect Payment), per spec — never invents Excel content.
+ */
+function exportToolbarHtml_(idPrefix) {
+  return '<button class="btn btn-secondary btn-sm" id="' + idPrefix + 'PrintBtn">&#128424; طباعة</button>' +
+    '<button class="btn btn-secondary btn-sm" id="' + idPrefix + 'PdfBtn">&#128196; PDF</button>';
+}
+function bindExportToolbar_(idPrefix, title, getBodyHtml, excelReport, excelFilters) {
+  document.getElementById(idPrefix + 'PrintBtn').onclick = function () { printReport_(title, getBodyHtml()); };
+  document.getElementById(idPrefix + 'PdfBtn').onclick = function () { exportPdf_(title, getBodyHtml(), document.getElementById(idPrefix + 'PdfBtn')); };
+  if (excelReport) {
+    var excelBtn = document.getElementById(idPrefix + 'ExcelBtn');
+    if (excelBtn) excelBtn.onclick = function () { exportExcel_(excelReport, excelFilters(), title, excelBtn); };
+  }
+}
+
 /**
  * Real .xlsx export: server builds the file (Excel.gs, using native
  * SpreadsheetApp/DriveApp — no client-side library) from the FULL filtered
