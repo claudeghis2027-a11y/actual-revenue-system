@@ -261,6 +261,8 @@ function escapeHtml(s) {
   });
 }
 function fmtNum(n) { return Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+/** Percentage is the primary user-facing value for an installment; falls back to the raw number/blank when no percentage was recorded (e.g. Deposit lines). */
+function installmentDisplay_(row) { return row.InstallmentPercent ? (row.InstallmentPercent + '%') : (row.Installment || ''); }
 
 /* ============================ Dashboard ============================ */
 function renderDashboard(content) {
@@ -372,7 +374,7 @@ function openStudentDetailModal_(studentCode) {
         '<h4 style="margin-top:16px;">المدفوعات السابقة</h4>' +
         '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>المبلغ المحصل</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
         (d.transactions.length ? d.transactions.map(function (tx) {
-          return '<tr><td>' + escapeHtml(String(tx.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(tx.FeeType) + '</td><td>' + escapeHtml(tx.Installment) +
+          return '<tr><td>' + escapeHtml(String(tx.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(tx.FeeType) + '</td><td>' + escapeHtml(installmentDisplay_(tx)) +
             '</td><td>' + escapeHtml(tx.PaymentType || '') + '</td><td class="num">' + fmtNum(tx.AmountPaid) + '</td><td>' + escapeHtml(tx.PaymentMethod) +
             '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + tx.ReceiptNumber + '\')">' + escapeHtml(tx.ReceiptNumber) + '</button></td><td>' + escapeHtml(tx.CreatedBy) + '</td></tr>';
         }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">لا توجد مدفوعات بعد</td></tr>') +
@@ -402,12 +404,14 @@ function paginationBar(data, onPage) {
 }
 
 /* ============================ Collect payment (multi-line, one receipt) ============================ */
-var collectCtx = { feeTypes: [], methods: [], installments: [], lineSeq: 0, selectedStudent: null, selectedStudentSummary: null, searchTimer: null };
+var collectCtx = { feeTypes: [], methods: [], installmentDates: [], blockSeq: 0, selectedStudent: null, selectedStudentSummary: null, searchTimer: null, depositOverrides: {} };
 
 function renderCollect(content) {
+  // getInstallments is needed again — Deposit's installment suggestion reads its
+  // StartDate/EndDate ranges from Year Settings (never hardcoded here).
   Promise.all([apiCall('getFeeTypes', {}), apiCall('getPaymentMethods', {}), apiCall('getInstallments', { academicYear: STATE.academicYear })])
     .then(function (r) {
-      collectCtx.feeTypes = r[0]; collectCtx.methods = r[1]; collectCtx.installments = r[2]; collectCtx.lineSeq = 0;
+      collectCtx.feeTypes = r[0]; collectCtx.methods = r[1]; collectCtx.installmentDates = r[2]; collectCtx.blockSeq = 0;
       collectCtx.selectedStudent = null; collectCtx.selectedStudentSummary = null;
 
       content.innerHTML = '' +
@@ -436,8 +440,9 @@ function renderCollect(content) {
         '</div>' + // #collectFormBody
         '</div></div>';
 
-      document.getElementById('addLineBtn').onclick = function () { addCollectLine_(); };
+      document.getElementById('addLineBtn').onclick = function () { addCollectBlock_(); };
       document.getElementById('pSaveBtn').onclick = function () { submitPayment_(content); };
+      document.getElementById('pDate').addEventListener('change', function () { reSuggestAllDepositInstallments_(); });
       bindCollectStudentSearch_(content);
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderCollect(content); }); });
@@ -523,37 +528,200 @@ function loadCollectStudentSummary_(content) {
       document.getElementById('changeStudentBtn').onclick = function () { resetCollectStudent_(content); };
       document.getElementById('collectTitle').textContent = 'تحصيل دفعة — ' + s.StudentName + ' (' + s.StudentCode + ')';
       document.getElementById('collectFormBody').style.display = '';
-      if (!document.getElementById('collectLines').children.length) addCollectLine_();
+      if (!document.getElementById('collectLines').children.length) addCollectBlock_();
     })
     .catch(function (err) { card.innerHTML = errorBox(err.message, function () { loadCollectStudentSummary_(content); }); });
 }
 
-/** Fixed, never-changing list — no API call needed to populate this dropdown. */
-var PAYMENT_TYPES = ['القسط الأول', 'القسط الثاني', 'القسط الثالث', 'Deposit', 'Full Amount'];
+/**
+ * Fixed, never-changing list — no API call needed to populate this dropdown.
+ * PaymentType describes the NATURE of the payment, separate from Fee Type
+ * and separate from which installment(s) are being settled:
+ *   - 'Full Amount': settle one or more installments in full (multi-select below).
+ *   - 'Deposit': an advance payment, not tied to any specific installment.
+ */
+var PAYMENT_TYPES = ['Deposit', 'Full Amount'];
 
-function addCollectLine_() {
-  var id = 'line' + (collectCtx.lineSeq++);
+/**
+ * One "block" = one Fee Type + one Payment Type. Choosing the Fee Type
+ * triggers ONE getCollectionPreview call (not one per installment, not one
+ * per checkbox/select change) that returns the live percentage + current
+ * outstanding amount for every configured installment — used by BOTH
+ * Payment Types. Full Amount lets the collector check any subset of
+ * installments (each becomes its own transaction line at submit). Deposit
+ * always resolves to exactly one installment (auto-suggested from Payment
+ * Date, manually overridable) — per the final business rule, a Deposit
+ * always belongs to a specific installment and reduces its Remaining
+ * exactly like any other payment against it.
+ */
+function addCollectBlock_() {
+  var id = 'blk' + (collectCtx.blockSeq++);
   var wrap = document.getElementById('collectLines');
   var row = document.createElement('div');
-  row.className = 'form-grid';
   row.id = id;
   row.style.borderTop = '1px solid var(--border)';
   row.style.paddingTop = '10px';
   row.style.marginTop = '10px';
   row.innerHTML =
+    '<div class="form-grid">' +
     field('نوع الرسوم', selectHtml(id + '_fee', collectCtx.feeTypes)) +
-    field('القسط', selectHtml(id + '_inst', collectCtx.installments.map(function (i) { return i.InstallmentNo + ' - ' + i.Label; }))) +
     field('نوع الدفعة', selectHtml(id + '_ptype', PAYMENT_TYPES)) +
-    field('الخصم المسموح به', '<input type="number" id="' + id + '_disc" value="0" min="0" step="0.01">') +
-    field('سبب الخصم', '<input id="' + id + '_reason" placeholder="اختياري">') +
-    field('المبلغ المحصل', '<input type="number" id="' + id + '_amt" min="0" step="0.01">') +
-    '<div class="field"><label>&nbsp;</label><button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'' + id + '\').remove(); recalcTotal_();">حذف البند</button></div>';
+    '<div class="field"><label>&nbsp;</label><button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'' + id + '\').remove(); recalcTotal_();">حذف البند</button></div>' +
+    '</div>' +
+    '<div id="' + id + '_body" style="margin-top:8px;"></div>';
   wrap.appendChild(row);
-  row.querySelectorAll('input').forEach(function (inp) { inp.addEventListener('input', recalcTotal_); });
+  document.getElementById(id + '_fee').onchange = function () { loadCollectBlockBody_(id); };
+  document.getElementById(id + '_ptype').onchange = function () { loadCollectBlockBody_(id); };
 }
+
+function loadCollectBlockBody_(id) {
+  var fee = document.getElementById(id + '_fee').value;
+  var ptype = document.getElementById(id + '_ptype').value;
+  var body = document.getElementById(id + '_body');
+  if (!fee || !ptype) { body.innerHTML = ''; recalcTotal_(); return; }
+
+  // Both Payment Types now use the SAME preview — ONE call per Fee Type selection,
+  // never per checkbox/select change, never per keystroke.
+  body.innerHTML = loadingBox();
+  apiCall('getCollectionPreview', { studentCode: collectCtx.selectedStudent.code, academicYear: STATE.academicYear, feeType: fee })
+    .then(function (breakdown) {
+      if (!breakdown.length) {
+        body.innerHTML = '<div class="error-box" style="font-size:12.5px;">لا توجد قاعدة سداد أو بند رسوم مُعرّف لهذا النوع لهذا الطالب.</div>';
+        recalcTotal_();
+        return;
+      }
+      if (ptype === 'Deposit') {
+        renderDepositBody_(id, breakdown);
+      } else {
+        renderFullAmountBody_(id, breakdown);
+      }
+    })
+    .catch(function (err) { body.innerHTML = '<div class="error-box" style="font-size:12.5px;">' + escapeHtml(err.message) + '</div>'; recalcTotal_(); });
+}
+
+/**
+ * Deposit: belongs to exactly ONE installment (final business rule). The
+ * installment is auto-SUGGESTED from the shared Payment Date against Year
+ * Settings' configured date ranges (collectCtx.installmentDates — never
+ * hardcoded here), but a manual selection is never overwritten afterward —
+ * tracked per-block in collectCtx.depositOverrides.
+ */
+function renderDepositBody_(id, breakdown) {
+  var body = document.getElementById(id + '_body');
+  body.setAttribute('data-breakdown', JSON.stringify(breakdown));
+  var suggested = suggestInstallmentForDate_(document.getElementById('pDate').value);
+  var current = collectCtx.depositOverrides[id] || suggested || String(breakdown[0].installment);
+
+  body.innerHTML =
+    '<div class="form-grid">' +
+    field('القسط (مقترح تلقائيًا حسب تاريخ السداد — يمكن تغييره يدويًا)', '<select id="' + id + '_inst">' +
+      breakdown.map(function (b) { return '<option value="' + b.installment + '">' + b.percent + '%</option>'; }).join('') + '</select>') +
+    field('الخصم (جديد فقط)', '<input type="number" id="' + id + '_disc" min="0" step="0.01" value="0">') +
+    field('سبب الخصم', '<input id="' + id + '_reason" placeholder="اختياري">') +
+    field('المبلغ (Deposit)', '<input type="number" id="' + id + '_depAmt" min="0" step="0.01">') +
+    '</div>' +
+    '<div id="' + id + '_info" style="font-size:12.5px;color:var(--text-muted);margin-top:4px;"></div>';
+
+  var instSelect = document.getElementById(id + '_inst');
+  instSelect.value = current;
+  updateDepositInfo_(id);
+
+  instSelect.addEventListener('change', function () {
+    collectCtx.depositOverrides[id] = instSelect.value; // user took manual control — never auto-overwritten again
+    updateDepositInfo_(id);
+    recalcTotal_();
+  });
+  document.getElementById(id + '_disc').addEventListener('input', function () { updateDepositInfo_(id); recalcTotal_(); });
+  document.getElementById(id + '_depAmt').addEventListener('input', recalcTotal_);
+  recalcTotal_();
+}
+
+/** Shows the current outstanding for the selected installment — pure display, reads from the ONE preview already fetched. */
+function updateDepositInfo_(id) {
+  var breakdown = JSON.parse(document.getElementById(id + '_body').getAttribute('data-breakdown') || '[]');
+  var instSelect = document.getElementById(id + '_inst');
+  if (!instSelect) return;
+  var b = breakdown.filter(function (x) { return String(x.installment) === instSelect.value; })[0];
+  var info = document.getElementById(id + '_info');
+  if (!b || !info) return;
+  var alreadyDiscounted = b.discount > 0;
+  info.textContent = 'المستحق الأصلي: ' + fmtNum(b.due) + ' — الخصم الحالي: ' + fmtNum(b.discount) +
+    ' — المحصل سابقًا: ' + fmtNum(b.collected) + ' — المتبقي حاليًا: ' + fmtNum(b.remaining) +
+    (alreadyDiscounted ? ' (يوجد خصم مطبّق بالفعل — لا يمكن إضافة خصم آخر)' : '');
+  var discInput = document.getElementById(id + '_disc');
+  if (discInput) discInput.disabled = alreadyDiscounted;
+}
+
+/** Re-suggests the installment for every currently-open Deposit block whose selection was never manually overridden. */
+function reSuggestAllDepositInstallments_() {
+  var suggested = suggestInstallmentForDate_(document.getElementById('pDate').value);
+  if (!suggested) return;
+  document.querySelectorAll('#collectLines > div').forEach(function (row) {
+    var id = row.id;
+    var ptypeEl = document.getElementById(id + '_ptype');
+    var instSelect = document.getElementById(id + '_inst');
+    if (!ptypeEl || ptypeEl.value !== 'Deposit' || !instSelect) return;
+    if (collectCtx.depositOverrides[id]) return; // manual selection stands, never overwritten
+    instSelect.value = suggested;
+    updateDepositInfo_(id);
+    recalcTotal_();
+  });
+}
+
+/** Matches paymentDate against Year Settings' configured installment date ranges — never hardcoded here. */
+function suggestInstallmentForDate_(paymentDate) {
+  if (!paymentDate || !collectCtx.installmentDates || !collectCtx.installmentDates.length) return null;
+  var d = new Date(paymentDate);
+  var match = collectCtx.installmentDates.filter(function (inst) {
+    return d >= new Date(inst.StartDate) && d <= new Date(inst.EndDate);
+  })[0];
+  return match ? String(match.InstallmentNo) : null;
+}
+
+/** Full Amount: multi-select checkboxes, each checked installment becomes its own line at submit — unchanged behavior. */
+function renderFullAmountBody_(id, breakdown) {
+  var body = document.getElementById(id + '_body');
+  body.innerHTML =
+    '<div class="table-wrap"><table><thead><tr><th></th><th>النسبة</th><th>المتبقي حاليًا</th><th>خصم جديد</th><th>سبب الخصم</th></tr></thead><tbody>' +
+    breakdown.map(function (b) {
+      var cid = id + '_i' + b.installment;
+      var alreadyDiscounted = b.discount > 0;
+      var discCell = alreadyDiscounted
+        ? '<span style="color:var(--text-muted);font-size:12px;">خصم مطبّق: ' + fmtNum(b.discount) + '</span>'
+        : '<input type="number" id="' + cid + '_disc" min="0" step="0.01" value="0" style="width:90px;" disabled>';
+      var reasonCell = alreadyDiscounted ? '' : '<input id="' + cid + '_reason" placeholder="اختياري" style="width:110px;" disabled>';
+      return '<tr><td><input type="checkbox" id="' + cid + '_chk" data-installment="' + b.installment + '" data-remaining="' + b.remaining + '" data-locked-discount="' + alreadyDiscounted + '"></td>' +
+        '<td>' + b.percent + '%</td><td class="num">' + fmtNum(b.remaining) + '</td>' +
+        '<td>' + discCell + '</td><td>' + reasonCell + '</td></tr>';
+    }).join('') +
+    '</tbody></table></div>';
+  breakdown.forEach(function (b) {
+    var cid = id + '_i' + b.installment;
+    var chk = document.getElementById(cid + '_chk');
+    var discInput = document.getElementById(cid + '_disc'); // only exists when no discount locked yet
+    var reasonInput = document.getElementById(cid + '_reason');
+    chk.addEventListener('change', function () {
+      if (discInput) discInput.disabled = !chk.checked;
+      if (reasonInput) reasonInput.disabled = !chk.checked;
+      recalcTotal_();
+    });
+    if (discInput) discInput.addEventListener('input', recalcTotal_);
+  });
+  recalcTotal_();
+}
+
+/** Pure client-side sum for display — the server always recomputes and enforces the authoritative amount. */
 function recalcTotal_() {
   var total = 0;
-  document.querySelectorAll('[id$="_amt"]').forEach(function (inp) { total += Number(inp.value || 0); });
+  document.querySelectorAll('[id$="_depAmt"]').forEach(function (inp) { total += Number(inp.value || 0); });
+  document.querySelectorAll('[id$="_chk"]').forEach(function (chk) {
+    if (!chk.checked) return;
+    var remaining = Number(chk.getAttribute('data-remaining') || 0);
+    var discInput = document.getElementById(chk.id.replace('_chk', '_disc'));
+    // discInput exists and is enabled only when no discount is locked yet.
+    var effectiveDisc = (discInput && chk.getAttribute('data-locked-discount') !== 'true') ? Number(discInput.value || 0) : 0;
+    total += Math.max(0, remaining - effectiveDisc);
+  });
   var el = document.getElementById('pTotal');
   if (el) el.textContent = 'الإجمالي: ' + fmtNum(total);
 }
@@ -570,21 +738,51 @@ function submitPayment_(content) {
   var btn = document.getElementById('pSaveBtn');
   var status = document.getElementById('pStatus');
 
-  var lineRows = document.querySelectorAll('#collectLines > div');
+  var blockRows = document.querySelectorAll('#collectLines > div');
   var lines = [];
   var lineError = null;
-  lineRows.forEach(function (row) {
+  blockRows.forEach(function (row) {
     var id = row.id;
-    var fee = document.getElementById(id + '_fee').value;
-    var inst = (document.getElementById(id + '_inst').value || '').split(' - ')[0];
-    var ptype = document.getElementById(id + '_ptype').value;
-    var amt = Number(document.getElementById(id + '_amt').value || 0);
-    var disc = Number(document.getElementById(id + '_disc').value || 0);
-    var reason = document.getElementById(id + '_reason').value;
-    if (!fee || !inst || !ptype || amt <= 0) { lineError = 'أكمل بيانات كل بند (نوع الرسوم، القسط، نوع الدفعة، المبلغ)'; return; }
-    lines.push({ feeType: fee, installment: inst, paymentType: ptype, amountPaid: amt, discountAmount: disc, discountReason: reason });
+    var feeEl = document.getElementById(id + '_fee'), ptypeEl = document.getElementById(id + '_ptype');
+    if (!feeEl || !ptypeEl) return; // block removed
+    var fee = feeEl.value, ptype = ptypeEl.value;
+    if (!fee || !ptype) { lineError = 'أكمل نوع الرسوم ونوع الدفعة لكل بند'; return; }
+
+    if (ptype === 'Deposit') {
+      var instEl = document.getElementById(id + '_inst');
+      var depInput = document.getElementById(id + '_depAmt');
+      var discInput = document.getElementById(id + '_disc');
+      var reasonInput = document.getElementById(id + '_reason');
+      var installment = instEl ? instEl.value : '';
+      var depAmt = Number((depInput && depInput.value) || 0);
+      if (!installment) { lineError = 'اختر القسط لبند Deposit — ' + fee; return; }
+      if (depAmt <= 0) { lineError = 'أدخل مبلغ Deposit صحيح في بند ' + fee; return; }
+      var isLocked = discInput ? discInput.disabled : false;
+      var disc = isLocked ? 0 : Number((discInput && discInput.value) || 0);
+      var reason = isLocked ? '' : ((reasonInput && reasonInput.value) || '');
+      lines.push({ feeType: fee, paymentType: 'Deposit', installment: installment, amountPaid: depAmt, discountAmount: disc, discountReason: reason });
+      return;
+    }
+
+    // Full Amount: one line per checked installment.
+    var anyChecked = false;
+    row.querySelectorAll('[id$="_chk"]').forEach(function (chk) {
+      if (!chk.checked) return;
+      anyChecked = true;
+      var installment = chk.getAttribute('data-installment');
+      var remaining = Number(chk.getAttribute('data-remaining') || 0);
+      var locked = chk.getAttribute('data-locked-discount') === 'true';
+      var discInput = document.getElementById(chk.id.replace('_chk', '_disc'));
+      var reasonInput = document.getElementById(chk.id.replace('_chk', '_reason'));
+      var disc = (!locked && discInput) ? Number(discInput.value || 0) : 0;
+      var reason = (!locked && reasonInput) ? (reasonInput.value || '') : '';
+      var amt = Math.round((remaining - disc) * 100) / 100;
+      if (amt <= 0) { lineError = 'قيمة السداد غير صحيحة لأحد الأقساط في بند ' + fee; return; }
+      lines.push({ feeType: fee, paymentType: 'Full Amount', installment: installment, amountPaid: amt, discountAmount: disc, discountReason: reason });
+    });
+    if (!anyChecked) lineError = 'اختر قسطًا واحدًا على الأقل عند اختيار Full Amount في بند ' + fee;
   });
-  if (!lines.length) lineError = 'أضف بندًا واحدًا على الأقل';
+  if (!lines.length && !lineError) lineError = 'أضف بندًا واحدًا على الأقل';
   if (lineError) { toast(lineError, 'error'); return; }
 
   var payload = {
@@ -611,8 +809,9 @@ function submitPayment_(content) {
       document.getElementById('pReceipt').value = '';
       document.getElementById('pNotes').value = '';
       document.getElementById('collectLines').innerHTML = '';
-      collectCtx.lineSeq = 0;
-      addCollectLine_();
+      collectCtx.blockSeq = 0;
+      collectCtx.depositOverrides = {};
+      addCollectBlock_();
       recalcTotal_();
       loadCollectStudentSummary_(content);
     })
@@ -633,7 +832,7 @@ function renderPayments(content, page) {
         data.items.map(function (p) {
           var badge = p.Status === 'Cancelled' ? '<span class="badge badge-red">ملغاة</span>' : '<span class="badge badge-green">نشطة</span>';
           return '<tr><td>' + escapeHtml(p.ReceiptNumber) + '</td><td>' + escapeHtml(p.StudentCode) + '</td><td>' + escapeHtml(p.FeeType) +
-            '</td><td>' + escapeHtml(p.Installment) + '</td><td>' + escapeHtml(p.PaymentType || '') + '</td><td>' + escapeHtml(String(p.PaymentDate).substring(0, 10)) +
+            '</td><td>' + escapeHtml(installmentDisplay_(p)) + '</td><td>' + escapeHtml(p.PaymentType || '') + '</td><td>' + escapeHtml(String(p.PaymentDate).substring(0, 10)) +
             '</td><td class="num">' + fmtNum(p.NetDue) + '</td><td class="num">' + fmtNum(p.AmountPaid) + '</td><td>' + escapeHtml(p.PaymentMethod) +
             '</td><td>' + badge + '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + p.ReceiptNumber + '\')">إيصال</button></td></tr>';
         }).join('') +
@@ -722,7 +921,7 @@ function renderStatement(content) {
           '<h4 style="margin-top:18px;">عمليات التحصيل</h4>' +
           '<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>نوع الرسوم</th><th>القسط</th><th>نوع الدفعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>الإيصال</th><th>بواسطة</th></tr></thead><tbody>' +
           d.transactions.map(function (t) { return '<tr><td>' + escapeHtml(String(t.PaymentDate).substring(0, 10)) + '</td><td>' + escapeHtml(t.FeeType) +
-            '</td><td>' + escapeHtml(t.Installment) + '</td><td>' + escapeHtml(t.PaymentType || '') + '</td><td class="num">' + fmtNum(t.AmountPaid) + '</td><td>' + escapeHtml(t.PaymentMethod) +
+            '</td><td>' + escapeHtml(installmentDisplay_(t)) + '</td><td>' + escapeHtml(t.PaymentType || '') + '</td><td class="num">' + fmtNum(t.AmountPaid) + '</td><td>' + escapeHtml(t.PaymentMethod) +
             '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + t.ReceiptNumber + '\')">' + escapeHtml(t.ReceiptNumber) + '</button></td><td>' + escapeHtml(t.CreatedBy) + '</td></tr>'; }).join('') +
           '</tbody></table></div>';
       })
@@ -814,6 +1013,13 @@ function loadSettings_(content) {
         '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="saveEduGroupBtn">حفظ</button></div>' +
         '</div>' +
 
+        '<div style="font-weight:600;margin-top:18px;">مواد إضافية — القسم الأمريكي فقط (ليست نوع تحصيل)</div>' +
+        '<div class="form-grid" style="margin-top:6px;">' +
+        field('المبلغ السنوي', '<input type="number" id="materialsAmount" min="0" step="0.01">') +
+        '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" id="saveMaterialsBtn">حفظ</button></div>' +
+        '</div>' +
+        '<p style="color:var(--text-muted);font-size:12px;margin-top:4px;">هذا بند إعدادي/عرضي فقط — لا يظهر كنوع تحصيل، ولا يمكن تحصيل مبلغ باسمه من شاشة التحصيل.</p>' +
+
         '<div style="font-weight:600;margin-top:18px;">نشاط وباص — مبلغ واحد لكل السنة الدراسية</div>' +
         '<div class="form-grid" style="margin-top:6px;">' +
         field('نوع الرسوم', selectHtml('actBusType', ['نشاط', 'باص'])) +
@@ -898,6 +1104,15 @@ function loadSettings_(content) {
         if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
         apiCall('upsertFeeSchedule', { academicYear: STATE.academicYear, stage: '', department: '', feeType: feeType, amount: amount })
           .then(function () { toast('تم حفظ رسوم ' + feeType, 'success'); loadSettings_(content); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      };
+
+      // مواد إضافية — American only, not a Collection Type; blocked server-side if department != AM.
+      document.getElementById('saveMaterialsBtn').onclick = function () {
+        var amount = document.getElementById('materialsAmount').value;
+        if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
+        apiCall('upsertFeeSchedule', { academicYear: STATE.academicYear, stage: '', department: 'AM', feeType: 'مواد إضافية', amount: amount })
+          .then(function () { toast('تم حفظ مواد إضافية', 'success'); loadSettings_(content); })
           .catch(function (err) { toast(err.message, 'error'); });
       };
 
@@ -1061,7 +1276,7 @@ function receiptHtml_(data) {
   var s = data.student, t = data.totals;
   var linesRows = data.lines.map(function (l) {
     var cancelledTag = l.Status === 'Cancelled' ? ' (CANCELLED)' : '';
-    return '<tr><td>' + escapeHtml(l.FeeType) + cancelledTag + '</td><td>' + escapeHtml(l.Installment) + '</td><td>' + escapeHtml(l.PaymentType || '') + '</td><td style="text-align:left;">' + fmtNum(l.AmountPaid) + '</td></tr>';
+    return '<tr><td>' + escapeHtml(l.FeeType) + cancelledTag + '</td><td>' + escapeHtml(installmentDisplay_(l)) + '</td><td>' + escapeHtml(l.PaymentType || '') + '</td><td style="text-align:left;">' + fmtNum(l.AmountPaid) + '</td></tr>';
   }).join('');
   return '' +
     '<div style="font-family:\'Courier New\',monospace;font-size:13px;line-height:1.5;direction:ltr;text-align:left;">' +
