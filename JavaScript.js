@@ -538,7 +538,7 @@ function loadCollectStudentSummary_(content) {
  * PaymentType describes the NATURE of the payment, separate from Fee Type
  * and separate from which installment(s) are being settled:
  *   - 'Full Amount': settle one or more installments in full (multi-select below).
- *   - 'Deposit': an advance payment, not tied to any specific installment.
+ *   - 'Deposit': a partial/advance payment that MUST belong to exactly one specific installment.
  */
 var PAYMENT_TYPES = ['Deposit', 'Full Amount'];
 
