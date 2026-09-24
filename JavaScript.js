@@ -1402,7 +1402,19 @@ function loadSettings_(content) {
         var eduBtn = document.getElementById('saveEduGroupBtn');
         eduBtn.disabled = true;
         apiCall('upsertFeeScheduleGroup', { academicYear: STATE.academicYear, department: dept, departments: groupDef.departments || [dept], feeType: 'تعليم', stages: groupDef.stages, amount: amount })
-          .then(function () { toast('تم حفظ رسوم ' + groupDef.label, 'success'); loadSettings_(content); })
+          .then(function (res) {
+            // Never report success for a partial save: the server must confirm EVERY department that was sent
+            // (a stale Apps Script deployment that predates multi-department support returns only one).
+            var sent = groupDef.departments || [dept];
+            var saved = (res && res.departments) || [res && res.department];
+            var missing = sent.filter(function (d) { return saved.indexOf(d) === -1; });
+            if (missing.length) {
+              toast('تنبيه: تم الحفظ لقسم ' + saved.join('، ') + ' فقط ولم يُحفظ لـ ' + missing.join('، ') + ' — نسخة Apps Script المنشورة قديمة. حدّث FeeSchedule.gs وانشر New version ثم أعد الحفظ.', 'error');
+            } else {
+              toast('تم حفظ رسوم ' + groupDef.label, 'success');
+            }
+            loadSettings_(content);
+          })
           .catch(function (err) { toast(err.message, 'error'); eduBtn.disabled = false; });
       };
 
