@@ -33,7 +33,8 @@ var GET_ACTIONS = {
   listPayments: 1, getReceipt: 1, getPaymentMethods: 1, getFeeTypes: 1,
   getStudentStatement: 1, reportRevenue: 1, reportRemainingBalance: 1, reportStudentList: 1,
   getInstallments: 1, listAudit: 1, getStudentFilters: 1, searchReceipts: 1, getStageDepartmentMap: 1,
-  getClassNames: 1, validateStudentStages: 1, getDashboardSummary: 1, getPaymentRules: 1
+  getClassNames: 1, validateStudentStages: 1, getDashboardSummary: 1, getPaymentRules: 1,
+  previewReceiptNumber: 1, reportAdjustedFees: 1
 };
 
 function buildQueryString_(params) {
@@ -190,13 +191,14 @@ var NAV_ITEMS = [
   { id: 'report_revenue', label: 'تقرير الإيرادات', icon: '&#128200;' },
   { id: 'report_remaining', label: 'المتبقي على الطلاب', icon: '&#9878;' },
   { id: 'statement', label: 'كشف حساب طالب', icon: '&#128196;' },
+  { id: 'report_adjusted', label: 'الطلاب ذوو الرسوم المعدَّلة', icon: '&#9998;', roles: ['Administrator', 'Reports User'] },
   { id: 'receipt_search', label: 'بحث عن إيصال', icon: '&#128269;' },
   { id: 'settings', label: 'الإعدادات', icon: '&#9881;', adminOnly: true },
   { id: 'users', label: 'المستخدمون', icon: '&#128100;', adminOnly: true }
 ];
 
 function appShellTemplate() {
-  var navHtml = NAV_ITEMS.filter(function (n) { return !n.adminOnly || STATE.user.role === 'Administrator'; })
+  var navHtml = NAV_ITEMS.filter(function (n) { return (!n.adminOnly || STATE.user.role === 'Administrator') && (!n.roles || n.roles.indexOf(STATE.user.role) !== -1); })
     .map(function (n) { return '<div class="nav-item" data-view="' + n.id + '"><span class="nav-icon">' + n.icon + '</span><span>' + n.label + '</span></div>'; })
     .join('');
 
@@ -238,7 +240,7 @@ function navigate(view) {
   var renderers = {
     dashboard: renderDashboard, students: renderStudents, collect: renderCollect,
     payments: renderPayments, report_revenue: renderReportRevenue, report_remaining: renderReportRemaining,
-    statement: renderStatement, receipt_search: renderReceiptSearch, settings: renderSettings, users: renderUsers
+    statement: renderStatement, report_adjusted: renderAdjustedFees, receipt_search: renderReceiptSearch, settings: renderSettings, users: renderUsers
   };
   (renderers[view] || renderDashboard)(content);
 }
@@ -261,6 +263,8 @@ function escapeHtml(s) {
   });
 }
 function fmtNum(n) { return Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+/** Like fmtNum, but null/undefined (no Official Fee Schedule entry) shows "—" instead of a misleading 0. */
+function fmtAmt_(n) { return (n === null || n === undefined) ? '—' : fmtNum(n); }
 /** Percentage is the primary user-facing value for an installment; falls back to the raw number/blank when no percentage was recorded (e.g. Deposit lines). */
 function installmentDisplay_(row) { return row.InstallmentPercent ? (row.InstallmentPercent + '%') : (row.Installment || ''); }
 
@@ -298,60 +302,141 @@ function statCard(label, value, accent) {
 /* ============================ Students ============================ */
 var studentsPage = 1;
 var studentsSearchTimer_ = null;
+var studentsFilterOptions_ = null; // {stages, classNames, departments} — fetched once per screen entry, not per keystroke
 
 function renderStudents(content, page, preserveFocus) {
   studentsPage = page || 1;
   var searchInputEl = document.getElementById('stuSearch');
   var search = searchInputEl ? searchInputEl.value : '';
+  var stageVal = (document.getElementById('stuStage') || {}).value || '';
+  var classVal = (document.getElementById('stuClass') || {}).value || '';
+  var deptVal = (document.getElementById('stuDept') || {}).value || '';
   var focusInfo = (preserveFocus && searchInputEl && document.activeElement === searchInputEl)
     ? { start: searchInputEl.selectionStart, end: searchInputEl.selectionEnd } : null;
 
-  apiCall('listStudents', { academicYear: STATE.academicYear, search: search, page: studentsPage, pageSize: 25 })
-    .then(function (data) {
-      var importBtnHtml = STATE.user.role === 'Administrator'
-        ? '<button class="btn btn-secondary" id="stuImportBtn">&#128229; استيراد الطلاب</button>' : '';
+  var listFilters = { academicYear: STATE.academicYear, search: search, stage: stageVal, className: classVal, department: deptVal, page: studentsPage, pageSize: 25 };
+  var calls = [apiCall('listStudents', listFilters)];
+  if (!studentsFilterOptions_) calls.push(apiCall('getStudentFilters', { academicYear: STATE.academicYear }));
+
+  Promise.all(calls)
+    .then(function (r) {
+      var data = r[0];
+      if (r[1]) studentsFilterOptions_ = r[1];
+      var isAdmin = STATE.user.role === 'Administrator';
+      var importBtnHtml = isAdmin ? '<button class="btn btn-secondary" id="stuImportBtn">&#128229; استيراد الطلاب</button>' : '';
+      var opts = studentsFilterOptions_ || { stages: [], classNames: [], departments: [] };
+
       content.innerHTML =
         panelHeader('قائمة الطلاب', '<div class="filters-row">' +
           '<div class="field"><label>بحث</label><input id="stuSearch" class="search-box" placeholder="الكود أو الاسم" value="' + escapeHtml(search) + '" autocomplete="off"></div>' +
+          field('المرحلة', selectHtmlWithSelected_('stuStage', opts.stages, stageVal)) +
+          field('الفصل', selectHtmlWithSelected_('stuClass', opts.classNames, classVal)) +
+          field('القسم', selectHtmlWithSelected_('stuDept', opts.departments, deptVal)) +
           '<button class="btn btn-secondary" id="stuSearchBtn">بحث</button>' +
           exportToolbarHtml_('stu') + '<button class="btn btn-secondary" id="stuExcelBtn">&#128202; Excel</button>' +
           importBtnHtml +
           '</div>') +
-        '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>القسم</th></tr></thead><tbody>' +
-        data.items.map(function (s) {
-          return '<tr><td>' + escapeHtml(s.StudentCode) + '</td><td><a href="#" class="student-name-link" data-code="' + escapeHtml(s.StudentCode) + '">' + escapeHtml(s.StudentName) + '</a></td><td>' + escapeHtml(s.Stage) +
-            '</td><td>' + escapeHtml(s.ClassName) + '</td><td>' + escapeHtml(s.Department) + '</td></tr>';
-        }).join('') +
+        '<div class="table-wrap"><table><thead><tr><th>الكود</th><th>الاسم</th><th>تعليم</th><th>نشاط</th><th>باص</th><th>المرحلة</th><th>الفصل</th><th>القسم</th></tr></thead><tbody id="stuTbody">' +
+        data.items.map(function (s) { return studentRowHtml_(s, isAdmin); }).join('') +
         '</tbody></table></div>' + paginationBar(data, function (p) { renderStudents(content, p); }) +
         '</div>';
 
       var input = document.getElementById('stuSearch');
-      document.getElementById('stuSearchBtn').onclick = function () {
-        clearTimeout(studentsSearchTimer_);
-        renderStudents(content, 1);
-      };
+      function reload() { clearTimeout(studentsSearchTimer_); renderStudents(content, 1); }
+      document.getElementById('stuSearchBtn').onclick = reload;
+      document.getElementById('stuStage').onchange = reload;
+      document.getElementById('stuClass').onchange = reload;
+      document.getElementById('stuDept').onchange = reload;
       input.addEventListener('input', function () {
         clearTimeout(studentsSearchTimer_);
         studentsSearchTimer_ = setTimeout(function () { renderStudents(content, 1, true); }, 350);
       });
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          clearTimeout(studentsSearchTimer_);
-          renderStudents(content, 1);
-        }
-      });
-      bindExportToolbar_('stu', 'قائمة الطلاب', getScreenPrintableContent_, 'students', function () { return { academicYear: STATE.academicYear, search: search }; });
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); reload(); } });
+      bindExportToolbar_('stu', 'قائمة الطلاب', getScreenPrintableContent_, 'students', function () { return listFilters; });
       var importBtn = document.getElementById('stuImportBtn');
       if (importBtn) importBtn.onclick = function () { openStudentImportModal_(content, studentsPage); };
 
       content.querySelectorAll('.student-name-link').forEach(function (a) {
         a.onclick = function (e) { e.preventDefault(); openStudentDetailModal_(a.getAttribute('data-code')); };
       });
+      if (isAdmin) bindStudentFeeEditors_();
 
       if (focusInfo) { input.focus(); input.setSelectionRange(focusInfo.start, focusInfo.end); }
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderStudents(content, studentsPage); }); });
+}
+
+function selectHtmlWithSelected_(id, options, selected) {
+  return '<select id="' + id + '"><option value="">الكل</option>' +
+    options.map(function (o) { return '<option value="' + escapeHtml(o) + '"' + (o === selected ? ' selected' : '') + '>' + escapeHtml(o) + '</option>'; }).join('') + '</select>';
+}
+
+var CANONICAL_FEE_TYPES = ['تعليم', 'نشاط', 'باص'];
+var FEE_TYPE_PREFIX_ = { 'تعليم': 'Education', 'نشاط': 'Activity', 'باص': 'Bus' };
+
+/** One row, independently re-renderable — cell-level updates after a save/reset never touch the rest of the table. */
+function studentRowHtml_(s, isAdmin) {
+  return '<tr id="stuRow_' + escapeHtml(s.StudentCode) + '" data-code="' + escapeHtml(s.StudentCode) + '">' +
+    '<td>' + escapeHtml(s.StudentCode) + '</td>' +
+    '<td><a href="#" class="student-name-link" data-code="' + escapeHtml(s.StudentCode) + '">' + escapeHtml(s.StudentName) + '</a></td>' +
+    CANONICAL_FEE_TYPES.map(function (ft) { return feeCellHtml_(s, ft, isAdmin); }).join('') +
+    '<td>' + escapeHtml(s.Stage) + '</td><td>' + escapeHtml(s.ClassName) + '</td><td>' + escapeHtml(s.Department) + '</td></tr>';
+}
+
+function feeCellHtml_(s, feeType, isAdmin) {
+  var prefix = FEE_TYPE_PREFIX_[feeType];
+  var approved = s[prefix + 'Approved'], hasOverride = s[prefix + 'HasOverride'];
+  if (!isAdmin) {
+    return '<td>' + fmtAmt_(approved) + (hasOverride ? ' <span class="badge badge-blue" title="سعر خاص بالطالب">معدَّل</span>' : '') + '</td>';
+  }
+  return '<td style="white-space:nowrap;">' +
+    '<input type="number" min="0" step="0.01" class="stu-fee-input" style="width:90px;" data-code="' + escapeHtml(s.StudentCode) + '" data-feetype="' + escapeHtml(feeType) + '" data-saved="' + (approved === null ? '' : approved) + '" value="' + (approved === null ? '' : approved) + '">' +
+    (hasOverride ? ' <button class="btn btn-secondary btn-sm stu-fee-reset" data-code="' + escapeHtml(s.StudentCode) + '" data-feetype="' + escapeHtml(feeType) + '" title="استعادة السعر الرسمي">&#8635;</button>' : '') +
+    '</td>';
+}
+
+/**
+ * Binds every fee input/reset button currently in the table. Uses .onchange /
+ * .onclick ASSIGNMENT (not addEventListener), so re-binding a cell can never
+ * stack a second handler — one edit is always exactly one write.
+ */
+function bindStudentFeeEditors_(scope) {
+  (scope || document).querySelectorAll('.stu-fee-input').forEach(bindStudentFeeInput_);
+  (scope || document).querySelectorAll('.stu-fee-reset').forEach(bindStudentFeeReset_);
+}
+function bindStudentFeeInput_(inp) {
+  inp.onchange = function () {
+    var code = inp.getAttribute('data-code'), feeType = inp.getAttribute('data-feetype');
+    var saved = inp.getAttribute('data-saved');
+    var amount = inp.value;
+    if (amount === '' || isNaN(Number(amount)) || Number(amount) < 0) { toast('قيمة غير صحيحة', 'error'); inp.value = saved; return; }
+    inp.disabled = true;
+    apiCall('setStudentFeeOverride', { studentCode: code, academicYear: STATE.academicYear, feeType: feeType, amount: amount })
+      .then(function (updated) { updateStudentFeeCell_(code, feeType, updated); toast('تم حفظ السعر المعتمد', 'success'); })
+      .catch(function (err) { toast(err.message, 'error'); inp.value = saved; inp.disabled = false; });
+  };
+}
+function bindStudentFeeReset_(btn) {
+  btn.onclick = function () {
+    var code = btn.getAttribute('data-code'), feeType = btn.getAttribute('data-feetype');
+    if (!confirm('استعادة السعر الرسمي لـ ' + feeType + '؟')) return;
+    btn.disabled = true;
+    apiCall('clearStudentFeeOverride', { studentCode: code, academicYear: STATE.academicYear, feeType: feeType })
+      .then(function (updated) { updateStudentFeeCell_(code, feeType, updated); toast('تم استعادة السعر الرسمي', 'success'); })
+      .catch(function (err) { toast(err.message, 'error'); btn.disabled = false; });
+  };
+}
+
+/** Replaces ONLY the affected fee cell from the server's returned student — no table/app reload. */
+function updateStudentFeeCell_(studentCode, feeType, updatedStudent) {
+  var row = document.getElementById('stuRow_' + studentCode);
+  if (!row) return;
+  var cellIndex = 2 + CANONICAL_FEE_TYPES.indexOf(feeType); // Code, Name, then تعليم/نشاط/باص in order
+  var tmp = document.createElement('tbody');
+  tmp.innerHTML = '<tr>' + feeCellHtml_(updatedStudent, feeType, true) + '</tr>';
+  var newCell = tmp.firstChild.firstChild;
+  row.children[cellIndex].replaceWith(newCell);
+  bindStudentFeeEditors_(newCell);
 }
 
 /** Student name click -> full statement in a modal (reuses getStudentStatement_, same data the "كشف حساب طالب" page already shows). */
@@ -466,7 +551,7 @@ function renderCollect(content) {
         '<div class="form-grid">' +
         field('تاريخ السداد', '<input type="date" id="pDate" value="' + todayStr_() + '">') +
         field('طريقة الدفع', selectHtml('pMethod', collectCtx.methods)) +
-        field('رقم إيصال (اختياري — يُنشأ تلقائيًا إن ترك فارغًا)', '<input id="pReceipt">') +
+        field('رقم الإيصال (من الخادم — يمكن تغييره يدويًا)', '<input id="pReceipt">') +
         '</div>' +
         '<h4 style="margin:16px 0 8px;">بنود التحصيل</h4>' +
         '<div id="collectLines"></div>' +
@@ -495,6 +580,7 @@ function renderCollect(content) {
         exportPdf_('ملخص تحصيل — ' + collectCtx.selectedStudentSummary.student.StudentName, collectSummaryPrintBody_(), document.getElementById('colPdfBtn'));
       };
       bindCollectStudentSearch_(content);
+      fetchReceiptNumberPreview_();
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderCollect(content); }); });
 }
@@ -649,12 +735,20 @@ function loadCollectBlockBody_(id) {
   // never per checkbox/select change, never per keystroke.
   body.innerHTML = loadingBox();
   apiCall('getCollectionPreview', { studentCode: collectCtx.selectedStudent.code, academicYear: STATE.academicYear, feeType: fee })
-    .then(function (breakdown) {
+    .then(function (preview) {
+      var breakdown = preview.installments;
       if (!breakdown.length) {
         body.innerHTML = '<div class="error-box" style="font-size:12.5px;">لا توجد قاعدة سداد أو بند رسوم مُعرّف لهذا النوع لهذا الطالب.</div>';
         recalcTotal_();
         return;
       }
+      // Official / Student / Effective — shown once per block, above whichever body renders below.
+      var amountInfo = preview.isOverride
+        ? '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px;">' + escapeHtml(fee) + ': الرسمي: ' + fmtAmt_(preview.officialAmount) +
+          ' — سعر الطالب: ' + fmtNum(preview.approvedAmount) + ' — <b>الفعلي: ' + fmtNum(preview.approvedAmount) + '</b></div>'
+        : '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px;">' + escapeHtml(fee) + ': الرسمي: ' + fmtAmt_(preview.officialAmount) +
+          ' — سعر الطالب: — — <b>الفعلي: ' + fmtAmt_(preview.officialAmount) + '</b></div>';
+      body.innerHTML = amountInfo + '<div id="' + id + '_sub"></div>';
       if (ptype === 'Deposit') {
         renderDepositBody_(id, breakdown);
       } else {
@@ -672,7 +766,7 @@ function loadCollectBlockBody_(id) {
  * tracked per-block in collectCtx.depositOverrides.
  */
 function renderDepositBody_(id, breakdown) {
-  var body = document.getElementById(id + '_body');
+  var body = document.getElementById(id + '_sub');
   body.setAttribute('data-breakdown', JSON.stringify(breakdown));
   var suggested = suggestInstallmentForDate_(document.getElementById('pDate').value);
   var current = collectCtx.depositOverrides[id] || suggested || String(breakdown[0].installment);
@@ -703,7 +797,7 @@ function renderDepositBody_(id, breakdown) {
 
 /** Shows the current outstanding for the selected installment — pure display, reads from the ONE preview already fetched. */
 function updateDepositInfo_(id) {
-  var breakdown = JSON.parse(document.getElementById(id + '_body').getAttribute('data-breakdown') || '[]');
+  var breakdown = JSON.parse(document.getElementById(id + '_sub').getAttribute('data-breakdown') || '[]');
   var instSelect = document.getElementById(id + '_inst');
   if (!instSelect) return;
   var b = breakdown.filter(function (x) { return String(x.installment) === instSelect.value; })[0];
@@ -745,7 +839,7 @@ function suggestInstallmentForDate_(paymentDate) {
 
 /** Full Amount: multi-select checkboxes, each checked installment becomes its own line at submit — unchanged behavior. */
 function renderFullAmountBody_(id, breakdown) {
-  var body = document.getElementById(id + '_body');
+  var body = document.getElementById(id + '_sub');
   body.innerHTML =
     '<div class="table-wrap"><table><thead><tr><th></th><th>النسبة</th><th>المتبقي حاليًا</th><th>خصم جديد</th><th>سبب الخصم</th></tr></thead><tbody>' +
     breakdown.map(function (b) {
@@ -796,6 +890,23 @@ function selectHtml(id, options) {
     options.map(function (o) { return '<option value="' + escapeHtml(o) + '">' + escapeHtml(o) + '</option>'; }).join('') + '</select>';
 }
 function todayStr_() { return new Date().toISOString().substring(0, 10); }
+
+/**
+ * Shows the collector the actual Receipt Number that will be used, BEFORE
+ * they save — server-authoritative (from previewReceiptNumber_ in
+ * Payments.gs), never invented by the frontend. It's a starting value in an
+ * editable field the collector can still change; either way, createCollection_
+ * re-verifies the final number is still free under its write lock right
+ * before saving, and rejects clearly (never silently renumbers) if it isn't.
+ */
+function fetchReceiptNumberPreview_() {
+  apiCall('previewReceiptNumber', {})
+    .then(function (r) {
+      var input = document.getElementById('pReceipt');
+      if (input && !input.value) input.value = r.receiptNumber;
+    })
+    .catch(function () { /* non-critical — the field just stays blank, server still auto-generates one at save time */ });
+}
 
 var lastIdempotencyKey = null;
 function submitPayment_(content) {
@@ -879,8 +990,17 @@ function submitPayment_(content) {
       addCollectBlock_();
       recalcTotal_();
       loadCollectStudentSummary_(content);
+      fetchReceiptNumberPreview_(); // a fresh server-authoritative number for the NEXT collection
     })
-    .catch(function (err) { status.textContent = ''; toast(err.message, 'error'); })
+    .catch(function (err) {
+      status.textContent = '';
+      toast(err.message, 'error');
+      if (err.code === 'RECEIPT_NUMBER_TAKEN') {
+        // Never silently renumber — clear the stale number and fetch a genuinely fresh one for the collector to use.
+        document.getElementById('pReceipt').value = '';
+        fetchReceiptNumberPreview_();
+      }
+    })
     .finally(function () { btn.disabled = false; });
 }
 
@@ -958,6 +1078,81 @@ function renderReportRemaining(content, page) {
       bindExportToolbar_('rem', 'المتبقي على الطلاب', getScreenPrintableContent_, 'remaining', function () { return { academicYear: STATE.academicYear }; });
     })
     .catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderReportRemaining(content, remainingPage); }); });
+}
+
+/* ============================ Adjusted Fees report ============================ */
+/**
+ * ONLY students with a saved override (server decides via the override
+ * columns themselves — never "current != official"). Filters: search
+ * (name/code), Stage, Class, Department — same filterStudents_ the Students
+ * screen uses. Excel = existing server export (full filtered set). Print/PDF
+ * = ONE batch call for the full filtered set, never just the visible page.
+ */
+var adjustedPage = 1;
+function renderAdjustedFees(content, page) {
+  adjustedPage = page || 1;
+  var f = {
+    search: (document.getElementById('adjSearch') || {}).value || '',
+    stage: (document.getElementById('adjStage') || {}).value || '',
+    className: (document.getElementById('adjClass') || {}).value || '',
+    department: (document.getElementById('adjDept') || {}).value || ''
+  };
+  var baseFilters = { academicYear: STATE.academicYear, search: f.search, stage: f.stage, className: f.className, department: f.department };
+  var calls = [apiCall('reportAdjustedFees', Object.assign({ page: adjustedPage, pageSize: 25 }, baseFilters))];
+  if (!studentsFilterOptions_) calls.push(apiCall('getStudentFilters', { academicYear: STATE.academicYear }));
+
+  Promise.all(calls).then(function (r) {
+    var data = r[0];
+    if (r[1]) studentsFilterOptions_ = r[1];
+    var opts = studentsFilterOptions_ || { stages: [], classNames: [], departments: [] };
+    content.innerHTML =
+      panelHeader('الطلاب ذوو الرسوم المعدَّلة', '<div class="filters-row">' +
+        '<div class="field"><label>بحث (الاسم أو الكود)</label><input id="adjSearch" class="search-box" value="' + escapeHtml(f.search) + '"></div>' +
+        field('المرحلة', selectHtmlWithSelected_('adjStage', opts.stages, f.stage)) +
+        field('الفصل', selectHtmlWithSelected_('adjClass', opts.classNames, f.className)) +
+        field('القسم', selectHtmlWithSelected_('adjDept', opts.departments, f.department)) +
+        '<button class="btn btn-secondary" id="adjApply">بحث</button>' +
+        exportToolbarHtml_('adj') + '<button class="btn btn-secondary" id="adjExcelBtn">&#128202; Excel</button></div>') +
+      '<div class="table-wrap">' + adjustedTableHtml_(data.items) + '</div>' +
+      paginationBar(data, function (p) { renderAdjustedFees(content, p); }) + '</div>';
+
+    function reload() { renderAdjustedFees(content, 1); }
+    document.getElementById('adjApply').onclick = reload;
+    document.getElementById('adjStage').onchange = reload;
+    document.getElementById('adjClass').onchange = reload;
+    document.getElementById('adjDept').onchange = reload;
+    document.getElementById('adjSearch').addEventListener('keydown', function (e) { if (e.key === 'Enter') reload(); });
+
+    document.getElementById('adjExcelBtn').onclick = function () {
+      exportExcel_('adjustedFees', baseFilters, 'الطلاب ذوو الرسوم المعدَّلة', document.getElementById('adjExcelBtn'));
+    };
+    function withFullSet(fn) {
+      apiCall('reportAdjustedFees', Object.assign({ page: 1, pageSize: 100000 }, baseFilters))
+        .then(function (all) { fn(adjustedTableHtml_(all.items)); })
+        .catch(function (err) { toast(err.message, 'error'); });
+    }
+    document.getElementById('adjPrintBtn').onclick = function () {
+      withFullSet(function (html) { printReport_('الطلاب ذوو الرسوم المعدَّلة', html); });
+    };
+    document.getElementById('adjPdfBtn').onclick = function () {
+      withFullSet(function (html) { exportPdf_('الطلاب ذوو الرسوم المعدَّلة', html, document.getElementById('adjPdfBtn')); });
+    };
+  }).catch(function (err) { content.innerHTML = errorBox(err.message, function () { renderAdjustedFees(content, adjustedPage); }); });
+}
+
+function adjustedTableHtml_(items) {
+  if (!items.length) return '<div class="state-box">لا يوجد طلاب لديهم رسوم معدَّلة</div>';
+  return '<table><thead><tr><th>الكود</th><th>الاسم</th><th>المرحلة</th><th>الفصل</th><th>القسم</th>' +
+    '<th>تعليم رسمي</th><th>تعليم معتمد</th><th>نشاط رسمي</th><th>نشاط معتمد</th><th>باص رسمي</th><th>باص معتمد</th>' +
+    '<th>الأنواع المعدَّلة</th><th>الفرق</th></tr></thead><tbody>' +
+    items.map(function (s) {
+      return '<tr><td>' + escapeHtml(s.StudentCode) + '</td><td>' + escapeHtml(s.StudentName) + '</td><td>' + escapeHtml(s.Stage) +
+        '</td><td>' + escapeHtml(s.ClassName) + '</td><td>' + escapeHtml(s.Department) +
+        '</td><td class="num">' + fmtAmt_(s.EducationOfficial) + '</td><td class="num">' + fmtAmt_(s.EducationApproved) +
+        '</td><td class="num">' + fmtAmt_(s.ActivityOfficial) + '</td><td class="num">' + fmtAmt_(s.ActivityApproved) +
+        '</td><td class="num">' + fmtAmt_(s.BusOfficial) + '</td><td class="num">' + fmtAmt_(s.BusApproved) +
+        '</td><td>' + escapeHtml(s.AdjustedTypes) + '</td><td class="num">' + fmtAmt_(s.Difference) + '</td></tr>';
+    }).join('') + '</tbody></table>';
 }
 
 /* ============================ Statement ============================ */
