@@ -1668,10 +1668,13 @@ function renderReceiptSearch(content) {
     '<div class="panel"><div class="panel-header"><h3>بحث عن إيصال</h3>' +
     '<div>' + exportToolbarHtml_('rs') + '<button class="btn btn-secondary" id="rsExcelBtn">&#128202; Excel</button></div></div>' +
     '<div class="panel-body">' +
+    // Both searches side by side on desktop; flex-wrap drops the second group to its own row only when space runs out.
+    '<div style="display:flex;flex-wrap:wrap;gap:10px 28px;align-items:flex-end;">' +
     '<div class="filters-row">' + field('رقم الإيصال', '<input id="rsReceiptNo" class="search-box" placeholder="مثال: RCPT-1234ABCD">') +
     '<button class="btn btn-primary" id="rsReceiptBtn">بحث</button></div>' +
-    '<div class="filters-row" style="margin-top:8px;">' + field('كود الطالب / اسم الطالب', '<input id="rsStudent" class="search-box" placeholder="الكود أو الاسم">') +
+    '<div class="filters-row">' + field('كود الطالب / اسم الطالب', '<input id="rsStudent" class="search-box" placeholder="الكود أو الاسم">') +
     '<button class="btn btn-primary" id="rsStudentBtn">بحث</button></div>' +
+    '</div>' +
     '</div>' +
     '<div class="panel-body" id="rsBody" style="padding:0;"></div></div>';
   var lastQuery = '', lastResults = [];
