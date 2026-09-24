@@ -412,9 +412,22 @@ function bindStudentFeeInput_(inp) {
     if (amount === '' || isNaN(Number(amount)) || Number(amount) < 0) { toast('قيمة غير صحيحة', 'error'); inp.value = saved; return; }
     inp.disabled = true;
     apiCall('setStudentFeeOverride', { studentCode: code, academicYear: STATE.academicYear, feeType: feeType, amount: amount })
-      .then(function (updated) { updateStudentFeeCell_(code, feeType, updated); toast('تم حفظ السعر المعتمد', 'success'); })
+      .then(function (updated) { updateStudentFeeCell_(code, feeType, updated); showCellSaved_(code, feeType); })
       .catch(function (err) { toast(err.message, 'error'); inp.value = saved; inp.disabled = false; });
   };
+}
+
+/** Small inline "saved" confirmation inside the edited cell only; disappears after ~2s. Each cell has its own, independent of other cells. */
+function showCellSaved_(studentCode, feeType) {
+  var row = document.getElementById('stuRow_' + studentCode);
+  var cell = row && row.children[2 + CANONICAL_FEE_TYPES.indexOf(feeType)];
+  if (!cell) return;
+  var msg = document.createElement('div');
+  msg.className = 'stu-fee-saved';
+  msg.textContent = '✓ تم حفظ المبلغ';
+  msg.style.cssText = 'font-size:11.5px;color:var(--success);margin-top:3px;';
+  cell.appendChild(msg);
+  setTimeout(function () { msg.remove(); }, 2000);
 }
 function bindStudentFeeReset_(btn) {
   btn.onclick = function () {
