@@ -1244,13 +1244,13 @@ function renderStatement(content) {
  */
 var EDUCATION_GROUPS = {
   AM: [
-    { key: 'KG', label: 'كي جي (KG1–KG2)', stages: ['KG1', 'KG2'] },
+    { key: 'KG', label: 'كي جي (KG1–KG2) — أمريكي وبريطاني معًا', stages: ['KG1', 'KG2'], departments: ['AM', 'BR'] },
     { key: 'Primary', label: 'ابتدائي (G1–G6)', stages: ['G1', 'G2', 'G3', 'G4', 'G5', 'G6'] },
     { key: 'Middle', label: 'إعدادي (G7–G9)', stages: ['G7', 'G8', 'G9'] },
     { key: 'Secondary', label: 'ثانوي (G10–G12)', stages: ['G10', 'G11', 'G12'] }
   ],
   BR: [
-    { key: 'KG', label: 'كي جي (KG1–KG2)', stages: ['KG1', 'KG2'] },
+    { key: 'KG', label: 'كي جي (KG1–KG2) — أمريكي وبريطاني معًا', stages: ['KG1', 'KG2'], departments: ['AM', 'BR'] },
     { key: 'Primary', label: 'ابتدائي (Y1–Y6)', stages: ['Y1', 'Y2', 'Y3', 'Y4', 'Y5', 'Y6'] },
     { key: 'Middle', label: 'إعدادي (Y7–Y9)', stages: ['Y7', 'Y8', 'Y9'] },
     { key: 'Secondary', label: 'ثانوي (Y10–Y12)', stages: ['Y10', 'Y11', 'Y12'] }
@@ -1401,7 +1401,7 @@ function loadSettings_(content) {
         if (amount === '') { toast('أدخل المبلغ', 'error'); return; }
         var eduBtn = document.getElementById('saveEduGroupBtn');
         eduBtn.disabled = true;
-        apiCall('upsertFeeScheduleGroup', { academicYear: STATE.academicYear, department: dept, feeType: 'تعليم', stages: groupDef.stages, amount: amount })
+        apiCall('upsertFeeScheduleGroup', { academicYear: STATE.academicYear, department: dept, departments: groupDef.departments || [dept], feeType: 'تعليم', stages: groupDef.stages, amount: amount })
           .then(function () { toast('تم حفظ رسوم ' + groupDef.label, 'success'); loadSettings_(content); })
           .catch(function (err) { toast(err.message, 'error'); eduBtn.disabled = false; });
       };
