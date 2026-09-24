@@ -23,7 +23,7 @@ var STATE = {
   token: sessionStorage.getItem('arv_token') || null,
   user: JSON.parse(sessionStorage.getItem('arv_user') || 'null'),
   academicYear: sessionStorage.getItem('arv_year') || '2026/2027',
-  view: 'dashboard'
+  view: sessionStorage.getItem('arv_view') || 'dashboard' // restored after a browser refresh (modals are never saved — only navigate() writes this)
 };
 
 // Actions safe to send as GET (flat, string-only payloads). Everything else
@@ -161,7 +161,9 @@ function renderApp() {
   if (!STATE.token) { root.innerHTML = loginTemplate(); bindLogin(); return; }
   root.innerHTML = appShellTemplate();
   bindShell();
-  navigate(STATE.view || 'dashboard');
+  // A restored module the current role cannot see (e.g. Settings for a non-admin) falls back to the home screen.
+  var allowed = document.querySelector('.nav-item[data-view="' + STATE.view + '"]');
+  navigate(allowed ? STATE.view : 'dashboard');
 }
 
 function loginTemplate() {
@@ -230,6 +232,7 @@ function bindShell() {
 
 function navigate(view) {
   STATE.view = view;
+  sessionStorage.setItem('arv_view', view);
   document.querySelectorAll('.nav-item').forEach(function (el) {
     el.classList.toggle('active', el.getAttribute('data-view') === view);
   });
@@ -1663,32 +1666,65 @@ function printReceipt_(data) {
 function renderReceiptSearch(content) {
   content.innerHTML =
     '<div class="panel"><div class="panel-header"><h3>بحث عن إيصال</h3>' +
-    '<div class="filters-row">' + field('رقم الإيصال / كود الطالب / اسم الطالب', '<input id="rsQuery" class="search-box" placeholder="ابحث هنا...">') +
-    '<button class="btn btn-primary" id="rsBtn">بحث</button>' + exportToolbarHtml_('rs') +
-    '<button class="btn btn-secondary" id="rsExcelBtn">&#128202; Excel</button></div></div>' +
+    '<div>' + exportToolbarHtml_('rs') + '<button class="btn btn-secondary" id="rsExcelBtn">&#128202; Excel</button></div></div>' +
+    '<div class="panel-body">' +
+    '<div class="filters-row">' + field('رقم الإيصال', '<input id="rsReceiptNo" class="search-box" placeholder="مثال: RCPT-1234ABCD">') +
+    '<button class="btn btn-primary" id="rsReceiptBtn">بحث</button></div>' +
+    '<div class="filters-row" style="margin-top:8px;">' + field('كود الطالب / اسم الطالب', '<input id="rsStudent" class="search-box" placeholder="الكود أو الاسم">') +
+    '<button class="btn btn-primary" id="rsStudentBtn">بحث</button></div>' +
+    '</div>' +
     '<div class="panel-body" id="rsBody" style="padding:0;"></div></div>';
   var lastQuery = '', lastResults = [];
-  function run() {
-    var q = document.getElementById('rsQuery').value.trim();
-    if (!q) return;
-    lastQuery = q;
+
+  function showResults(list) {
+    lastResults = list;
     var body = document.getElementById('rsBody');
-    body.innerHTML = loadingBox();
+    if (!list.length) { body.innerHTML = '<div class="state-box">لا توجد نتائج</div>'; return; }
+    body.innerHTML = '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>كود الطالب</th><th>اسم الطالب</th><th>التاريخ</th><th>الإجمالي</th><th></th></tr></thead><tbody>' +
+      list.map(function (r) {
+        return '<tr><td>' + escapeHtml(r.receiptNumber) + '</td><td>' + escapeHtml(r.studentCode) + '</td><td>' + escapeHtml(r.studentName) +
+          '</td><td>' + escapeHtml(String(r.paymentDate).substring(0, 10)) + '</td><td class="num">' + fmtNum(r.amountPaid) +
+          '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + r.receiptNumber + '\')">عرض</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  // Receipt Number ONLY — existing getReceipt action (exact receipt number), one request, never interpreted as a student.
+  function runReceipt() {
+    var q = document.getElementById('rsReceiptNo').value.trim();
+    if (!q) { toast('أدخل رقم الإيصال', 'error'); return; }
+    lastQuery = q;
+    document.getElementById('rsBody').innerHTML = loadingBox();
+    apiCall('getReceipt', { receiptNumber: q })
+      .then(function (d) {
+        showResults([{ receiptNumber: d.receiptNumber, studentCode: d.student.StudentCode, studentName: d.student.StudentName, paymentDate: d.paymentDate, amountPaid: d.totals.amountPaid }]);
+      })
+      .catch(function (err) {
+        if (err.code === 'NOT_FOUND') { showResults([]); return; }
+        document.getElementById('rsBody').innerHTML = errorBox(err.message, runReceipt);
+      });
+  }
+
+  // Student Code / Name ONLY — existing searchReceipts action (one request); rows that matched only
+  // by receipt number are dropped, so the student box never behaves as a receipt-number search.
+  function runStudent() {
+    var q = document.getElementById('rsStudent').value.trim();
+    if (!q) { toast('أدخل كود الطالب أو اسمه', 'error'); return; }
+    lastQuery = q;
+    var ql = q.toLowerCase();
+    document.getElementById('rsBody').innerHTML = loadingBox();
     apiCall('searchReceipts', { query: q, academicYear: STATE.academicYear })
       .then(function (list) {
-        lastResults = list;
-        if (!list.length) { body.innerHTML = '<div class="state-box">لا توجد نتائج</div>'; return; }
-        body.innerHTML = '<div class="table-wrap"><table><thead><tr><th>رقم الإيصال</th><th>كود الطالب</th><th>اسم الطالب</th><th>التاريخ</th><th>الإجمالي</th><th></th></tr></thead><tbody>' +
-          list.map(function (r) {
-            return '<tr><td>' + escapeHtml(r.receiptNumber) + '</td><td>' + escapeHtml(r.studentCode) + '</td><td>' + escapeHtml(r.studentName) +
-              '</td><td>' + escapeHtml(String(r.paymentDate).substring(0, 10)) + '</td><td class="num">' + fmtNum(r.amountPaid) +
-              '</td><td><button class="btn btn-secondary btn-sm" onclick="openReceipt_(\'' + r.receiptNumber + '\')">عرض</button></td></tr>';
-          }).join('') + '</tbody></table></div>';
+        showResults(list.filter(function (r) {
+          return String(r.studentCode).toLowerCase().indexOf(ql) !== -1 || String(r.studentName || '').toLowerCase().indexOf(ql) !== -1;
+        }));
       })
-      .catch(function (err) { body.innerHTML = errorBox(err.message, run); });
+      .catch(function (err) { document.getElementById('rsBody').innerHTML = errorBox(err.message, runStudent); });
   }
-  document.getElementById('rsBtn').onclick = run;
-  document.getElementById('rsQuery').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+
+  document.getElementById('rsReceiptBtn').onclick = runReceipt;
+  document.getElementById('rsStudentBtn').onclick = runStudent;
+  document.getElementById('rsReceiptNo').addEventListener('keydown', function (e) { if (e.key === 'Enter') runReceipt(); });
+  document.getElementById('rsStudent').addEventListener('keydown', function (e) { if (e.key === 'Enter') runStudent(); });
   document.getElementById('rsPrintBtn').onclick = function () {
     if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
     printReport_('نتائج البحث عن إيصال — ' + lastQuery, getScreenPrintableContent_());
@@ -1697,8 +1733,6 @@ function renderReceiptSearch(content) {
     if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
     exportPdf_('نتائج البحث عن إيصال — ' + lastQuery, getScreenPrintableContent_(), document.getElementById('rsPdfBtn'));
   };
-  // Results are already fully loaded client-side (one search call) — SheetJS builds the .xlsx
-  // directly from what's already in memory, respecting the current search, zero extra API calls.
   document.getElementById('rsExcelBtn').onclick = function () {
     if (!lastResults.length) { toast('ابحث أولًا', 'error'); return; }
     var sheet = XLSX.utils.json_to_sheet(lastResults.map(function (r) {
@@ -1984,6 +2018,30 @@ function importSummaryHtml_(s, isFinal) {
     (isFinal ? '<p style="color:var(--success);font-weight:600;">تم اعتماد الاستيراد.</p>' : '') +
     errorsHtml;
 }
+
+/* ============================ Modals: ESC / click outside ============================ */
+/**
+ * Registered ONCE at load (event delegation on document) — no per-modal or
+ * per-render handlers, so nothing can stack. Closing always triggers the
+ * modal's own existing X button, so each modal keeps its own close logic
+ * (e.g. the Import modal resets its state). Applies to .modal-backdrop
+ * overlays only — clicks on normal module pages are never affected.
+ */
+function closeTopModal_() {
+  var backdrops = document.querySelectorAll('.modal-backdrop');
+  if (!backdrops.length) return;
+  var top = backdrops[backdrops.length - 1];
+  var x = top.querySelector('.close-x');
+  if (x) x.click(); else top.remove();
+}
+var modalPressTarget_ = null;
+document.addEventListener('mousedown', function (e) { modalPressTarget_ = e.target; });
+document.addEventListener('click', function (e) {
+  // Only a click that both started AND ended on the backdrop itself (outside .modal) closes —
+  // a text-selection drag that starts inside the modal and ends outside does not.
+  if (e.target.classList && e.target.classList.contains('modal-backdrop') && modalPressTarget_ === e.target) closeTopModal_();
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeTopModal_(); });
 
 /* ============================ Boot ============================ */
 document.addEventListener('DOMContentLoaded', function () {
