@@ -132,7 +132,21 @@
   .form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .form-grid .full{ grid-column:1 / -1; }
 
- .login-wrap{ min-height:100vh; display:flex; align-items:center; justify-content:center; background-image:linear-gradient(rgba(5,35,70,.18),rgba(5,35,70,.18)),url('./login-background.png'); background-size:cover; background-position:center; background-repeat:no-repeat; }
+.login-wrap{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  height:100vh;
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background-image:linear-gradient(rgba(5,35,70,.18),rgba(5,35,70,.18)),url('./login-background.png');
+  background-size:cover;
+  background-position:center;
+  background-repeat:no-repeat;
+  z-index:9999;
+}
   .login-card{ background:#fff; border-radius:14px; padding:32px 30px; width:min(360px,90vw); box-shadow:0 10px 40px rgba(0,0,0,.3); }
   .login-card h2{ margin-top:0; text-align:center; }
   .login-card .field{ margin-bottom:14px; }
