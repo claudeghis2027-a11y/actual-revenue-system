@@ -169,7 +169,7 @@ function renderApp() {
 function loginTemplate() {
   return '' +
     '<div class="login-wrap"><div class="login-card">' +
-    '<h2>الإيرادات الفعلية</h2>' +
+    '<h2>Collection System</h2>' +
     '<div class="field"><label>اسم المستخدم</label><input id="loginUser" autocomplete="username"></div>' +
     '<div class="field"><label>كلمة المرور</label><input id="loginPass" type="password" autocomplete="current-password"></div>' +
     '<div id="loginError" class="error-box" style="font-size:12.5px;margin-bottom:10px;"></div>' +
